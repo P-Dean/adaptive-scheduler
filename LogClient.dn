@@ -1,0 +1,41 @@
+// ResourceManager, NodeManager, ApplicatioMaster, Executor
+// Logs are split into three different categories
+// [Process-originNode-AppMasterID][APP][AppID]: supplies app metrics [completion times/resource usage on NM]
+// [process-originNode][ERROR]: supplies info on errors encountered (LIMITED SUPPORT)
+// [Process-OriginNode][INFO]: supplies a log of start and end time of components
+
+//LogEntryExample:
+//[AM-12][APP][13-Coarse70Wkld2]: Completed at --"Date Entry" after waiting --RM-EntryDate and running for --milliseconds
+data logEntries{
+  int id[] // AM-n or AM-n-EXEC-n
+  char Node// NodeManager IP address
+  char type[] // Info, warn, error, Exe
+  char content[] // content of the logged output
+}
+
+component provides Log requires io.FileSystem fileSystem, io.File, data.StringUtil stringUtil,
+io.TextFile, time.DateUtil date, time.Calendar cal, data.IntUtil iu{
+
+  static char logOutputFile[] = null
+  static char logCreatedOnIP[] = ""
+
+  //static mutex and wrap mutex around logArguement
+  static Mutex logWrite = new Mutex()
+
+  void Log:logArgument(char arg[]){
+    mutex(logWrite){
+      File f = new File(logOutputFile,File.FILE_ACCESS_WRITE)
+      f.setPos(f.getSize())
+      f.write("$(arg)\n")
+      f.close()
+    }
+  }
+
+ void Log:logStartup(char compName[], char nodeIP[]){
+    logCreatedOnIP = nodeIP
+    logOutputFile = "log/$(compName)$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year))_$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond)).txt"
+    // $(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))
+    logArgument("[NOTICE] Log for $compName($(nodeIP)) began at $(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))")
+  }
+
+}

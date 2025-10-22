@@ -1,0 +1,31 @@
+interface hostLib  {
+
+int getcores ()
+
+int getmemory ()
+
+int getglobalmemory ()
+
+}
+
+component provides hostinfo requires native hostLib lib {
+
+int hostinfo:getcores(){
+
+return lib.getcores()
+
+}
+
+int hostinfo:getmemory(){
+
+return lib.getmemory()
+
+}
+
+int hostinfo:getglobalmemory(){
+
+return lib.getglobalmemory()
+
+}
+
+}

@@ -1,0 +1,188 @@
+// ApplicationManager
+// Entry point for all submissions
+// TRANSFER STREAMHANDLER FROM RM
+data SubmittedApplication{
+  char applicationName[]
+  int coresRequired
+  int memoryRequired
+}
+
+data NodeResources{
+  char nmID[]
+  int nmCores
+  int nmMemory
+}
+
+component provides ApplicationManager(AdaptEvents) requires data.adt.List, data.IntUtil iu, data.StringUtil stringUtil, time.Timer timer,
+io.Output out, time.DateUtil date, time.Calendar cal {
+
+  Scheduling scheduler
+  
+  //MORE DETAILED ENTRIES PERSIST WITHIN THE SCHEUDLER [FIFO,NFAIR,DRF]
+List submittedApps = new List()
+List nodeRes = new List()
+
+	void ApplicationManager:setScheduler(Scheduling sched)
+		{
+		scheduler = sched
+		}
+
+  void ApplicationManager:addNodeManager(char nodeManagerInfo[]]){
+    String nmInfo[] = stringUtil.explode(nodeManagerInfo, ":")
+    //out.println("ApplicationManager: Received NodeManager Information")
+    //Adds NM to workers (NodeManagerID,Total Cores,Total Memory)
+    nodeRes.add(new NodeResources(nmInfo[0].string,iu.intFromString(nmInfo[1].string),iu.intFromString(nmInfo[2].string)))
+    for(NodeResources nr = nodeRes.getFirst(); nr != null; nr = nodeRes.getNext()) {out.println("AM-NM:$(nr.nmID)--$(iu.intToString(nodeRes.getLength()))")}
+  }
+
+  void ApplicationManager:AppSubmission(char appRequest[]){
+
+          out.println("Entered Application manager")
+
+          bool appNameAvail = true
+          bool driverResAvail = false
+          bool execResAvail = false
+          //INITAL VALUES ARE DEFAULTS IN THE EVENT OF AN INCOMPLETE REQUEST
+          //FILE [.DN FILE] & DATA [INPUT DATA FOR OPERATIONS] ARE MANDATORY
+          DateTime subTimestmp = cal.getTime()
+          //--driver-cores 1
+          int driverCores = 1
+          //--driver-memory 4g
+          int driverMemory = 10000
+          //--executor-memory 2g
+          int execMemory = 10000
+          //--executor-cores 1
+          int execCores = 1
+          //--num-executors 4
+          int execCount = 2
+          //--name Example
+          char appName[] = new char[](iu.intToString(date.toMilliseconds(subTimestmp)))
+          //--application CoarseGrainedTest.dn
+          char appFile[]
+          //--application-data AliceDTRH.txt
+
+          //~num-partitions 4
+          int numPart = 4
+
+          char appData[]
+          //request/ 1 [appname]/  2 [cores]-[memory-KB]/   3  [data-file]
+
+          String argParams[] = stringUtil.explode(appRequest, "~")
+          String subParamSplit[]
+          int mem
+          for(int i = 0; i < argParams.arrayLength; i++){
+            //out.println("P:$(argParams[i].string)")
+            if(!stringUtil.ifind(argParams[i].string, "driver-cores")){
+              //out.println("Found: driver-cores")
+              subParamSplit = stringUtil.explode(argParams[i].string, " ")
+              driverCores = iu.intFromString(subParamSplit[1].string)
+              //out.println("$(iu.intToString(driverCores))")
+            }
+            if(!stringUtil.find(argParams[i].string, "driver-memory")){
+              //out.println("Found: driver-memory")
+              subParamSplit = stringUtil.explode(argParams[i].string, " ")
+              if(subParamSplit[1].arrayLength < 2){
+              mem = iu.intFromString(subParamSplit[1].string)
+              driverMemory = mem*1000000
+              }
+              //out.println("$(iu.intToString(driverMemory))")
+            }
+            if(!stringUtil.ifind(argParams[i].string, "executor-cores")){
+              //out.println("Found: executor-cores")
+              subParamSplit = stringUtil.explode(argParams[i].string, " ")
+              execCores = iu.intFromString(subParamSplit[1].string)
+            }
+            if(!stringUtil.find(argParams[i].string, "executor-memory")){
+            // out.println("Found: executor-memory")
+              subParamSplit = stringUtil.explode(argParams[i].string, " ")
+              if(subParamSplit[1].arrayLength < 2){
+              mem = iu.intFromString(subParamSplit[1].string)
+              execMemory = mem*1000000
+              }
+              //out.println("$(iu.intToString(execMemory))\n$(iu.intToString(mem))")
+            }
+            if(!stringUtil.ifind(argParams[i].string, "num-executors")){
+              //out.println("Found: executor-count")
+              subParamSplit = stringUtil.explode(argParams[i].string, " ")
+              execCount = iu.intFromString(subParamSplit[1].string)
+            }
+            if(!stringUtil.ifind(argParams[i].string, "application-name")){
+              //out.println("Found: application-name")
+              subParamSplit = stringUtil.explode(argParams[i].string, " ")
+              appName = new char[] (subParamSplit[1].string,"-",appName)
+            }
+            if(!stringUtil.ifind(argParams[i].string, "application-dn")){
+              //out.println("Found: application-file")
+              subParamSplit = stringUtil.explode(argParams[i].string, " ")
+              appFile = subParamSplit[1].string
+            }
+            if(!stringUtil.find(argParams[i].string, "num-partitions")){
+              //out.println("Found: application-data")
+              if()
+              subParamSplit = stringUtil.explode(argParams[i].string, " ")
+              numPart = iu.intFromString(subParamSplit[1].string)
+            }
+            if(!stringUtil.find(argParams[i].string, "application-data")){
+              //out.println("Found: application-data")
+              if()
+              subParamSplit = stringUtil.explode(argParams[i].string, " ")
+              appData = subParamSplit[1].string
+            }
+          }
+
+          //Check executable and data have been parsed from commandline
+          if(appFile.arrayLength == 0){
+            out.println("no executable file given")
+          }
+          if(appData.arrayLength == 0){
+            out.println("no data file given")
+          }
+          //The complete request to be sent if accepted
+          char applicationRequest[] = ("$(appName):$(appFile):$(appData):$(iu.intToString(driverCores)):$(iu.intToString(driverMemory)):$(iu.intToString(execCount))-$(iu.intToString(execCores))-$(iu.intToString(execMemory)):$(iu.intToString(numPart))")
+
+          if(submittedApps.getLength() > 0){
+            for(SubmittedApplication sa = submittedApps.getFirst(); sa != null; sa = submittedApps.getNext()) {
+                if(stringUtil.iequal(sa.applicationName,appName)){
+                  out.println("ERROR: Application Name is invalid")
+                  appNameAvail = false
+                }
+                else {
+                //out.println("APPNAME:TRUE")
+                  appNameAvail = true
+                }
+            }
+          }// end SubApps > 0
+
+          if(nodeRes.getLength() > 0){
+            for(NodeResources nr = nodeRes.getFirst(); nr != null; nr = nodeRes.getNext()) {
+                if (nr.nmCores >= driverCores && nr.nmMemory >= driverMemory){
+                    driverResAvail = true
+                    //out.println("DRIVER:TRUE")
+
+                }                    else {
+                                      out.print("ERROR: AM Requirements exceed node resources available\n")
+                                    }
+
+                if (nr.nmCores >= execCores && nr.nmMemory >= execMemory){
+                    execResAvail = true
+                    //out.println("EXEC:TRUE")
+                }                    else {
+                                      out.print("ERROR: Exec Requirements exceed node resources available\n")
+                                    }
+
+            }//End For NodeResources
+          }//Enf If
+          else {
+            out.print("ERROR: No NodeManagers available\n")
+            driverResAvail = false
+            execResAvail = false
+          }
+
+          if(appNameAvail == true && driverResAvail == true && execResAvail == true){
+            out.println("AppMngr: Submitting App $(appName) to Scheduler")
+            scheduler.submitToScheduler(applicationRequest)
+            submittedApps.add(new SubmittedApplication("$(appName)",driverCores,driverMemory))
+          }
+  }
+
+}

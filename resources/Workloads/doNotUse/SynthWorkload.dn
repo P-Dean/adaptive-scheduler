@@ -1,0 +1,3 @@
+interface SynthWorkload{
+  void runDN()
+}

@@ -1,0 +1,3 @@
+interface YarnRMClient  {
+  void registerAM(char amRequest[],char socket[],int amID, char rmSocket[],char yaSocket[])
+}

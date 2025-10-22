@@ -1,0 +1,95 @@
+
+//TODO: ADD constructor for all avilable components
+//TODO: ADD Communication with Master
+
+data applicationMaster {
+  char ipAddress[]
+  int portNo
+  bool amAlive // if amAlive == false: Executor Gracefully Decomissions
+}
+
+data executorProperties {
+  char ipAddress[]
+  int portNo
+  int numFailedTasks //If == 5, node is blacklisted and executor is gracefully decommisioned
+  int idleIterations   //Equal to five = 5 seconds delay
+  bool registered // if registered, exeutor may be used
+}
+
+data Task{
+  int taskSetId
+  char taskSetExecutable[]
+  char taskSetData[]
+  bool completed
+}
+
+uses SynthWorkload
+uses App
+component provides ExecutorThread requires data.adt.List, io.Output out, Loader loader,data.IntUtil iu, net.TCPSocket, net.TCPServerSocket,
+io.FileSystem fileSystem, io.File, data.StringUtil stringUtil,  time.Timer time ,net.UDPClient udp, os.Run run, composition.RecursiveLoader rload
+ {
+int iD
+int tId
+int amID
+int taskscompleted
+List tasksGiven = new List()
+List taskSets = new List()
+int taskSetTotal = 0
+
+  void streamHandler(char command[]){
+    out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))-Thread-$(iu.intToString(tId))]:Command:: $command")
+    String commandParsed[] = stringUtil.explode(command, ":")
+    int taskSetSize = iu.intFromString(commandParsed[3].string)
+    out.println("$(commandParsed[3].string) ---- $(iu.intToString(taskSetSize))")
+    taskSets.add(new TaskSet(iu.intFromString(commandParsed[0].string), taskSetSize, 0 , false))
+    for(int i = 0; i != taskSetSize; i++){
+      tasksGiven.add(new Task(iu.intFromString(commandParsed[0].string),commandParsed[1].string,commandParsed[2].string,false))
+    }
+    out.println("AM-$(iu.intToString(amID))-EXEC-CREATED-TASKS: $(iu.intToString(tasksGiven.getLength() ) )")
+  }//End StreamHandler
+
+  int launchTask(Task t, int execId){
+    LoadedComponents lc = rload.load(t.taskSetExecutable)
+    IDC com = lc.mainComponent
+    App app = new App() from com
+    AppParam parameters[] = new AppParam[3]
+    parameters[0] = new AppParam()
+    parameters[0].string = iu.intToString(amID)
+    parameters[1] = new AppParam()
+    parameters[1].string = iu.intToString(execId)
+    parameters[2] = new AppParam()
+    parameters[2].string = iu.intToString(tId)
+    app.main(parameters)
+    return 0
+  }
+
+  // EXECUTOR PROPERTIES                                                // AM PROPERTIES         //
+  TaskSet ExecutorThread:begin(char s[],int amId,int execId,int threadId){
+    iD = execId
+    amID = amId
+    tId = threadId
+    TaskSet result = new TaskSet()
+    //  2\ 127.0.0.1 \ 2143 \ 2\2000000 \ 127.0.0.1\2143
+    out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))-Thread-$(iu.intToString(tId))]: Starting to Launch given task set:")
+    streamHandler(s)
+    while(tasksGiven.getLength()>0){
+        for(Task t = tasksGiven.getFirst(); t != null; t = tasksGiven.getNext()){
+          launchTask(t, iD)
+          tasksGiven.remove(t)
+  //            tasksGiven.remove(t)
+          for(TaskSet ts = taskSets.getFirst(); ts != null; ts = taskSets.getNext()){
+            if(t.taskSetId == ts.taskSetId){
+              ts.tasksCompleted++
+              if(ts.tasksCompleted == 5){
+                ts.complete = true
+                result = ts
+              }
+            }
+          }//End TaskSets
+        }//End Tasks Given
+        taskSetTotal-=1
+      }
+      return result
+    }//end executor
+
+}

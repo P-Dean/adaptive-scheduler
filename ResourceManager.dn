@@ -1,0 +1,228 @@
+/******************************************
+*  Resource Manager controls the resoure  *
+*  usage of the cluster using a Scheduler *
+*  and monitors NodeManagers and their    *
+*  ApplicationMasters through heartbeats  *
+******************************************/
+
+//TODO: Add command for RM to request NM ApplicationMaster
+
+data Workload{
+  int workloadNo
+  char workloadDir[]
+  bool completed
+}
+
+component provides App requires io.Output out, data.adt.List, data.IntUtil iu, net.UDPServer udp, net.TCPSocket,
+net.TCPServerSocket, io.FileSystem fileSystem, io.File,io.TextFile, data.StringUtil stringUtil,
+time.Calendar cal, time.Timer timer, Scheduling, ApplicationManager, AppMasterService, Log{
+  
+  Scheduling scheduler
+  ApplicationManager appMngr
+  AppMasterService appMstrServ
+  
+  static Log log = new Log()
+  char compName[] = "ResourceManager.dn"
+  // static ApplicationManager appMngr = new ApplicationManager()
+
+  // ApplicationManager appMngr = new ApplicationManager()
+  //Used for workload entry from command line arguments
+  int commandLineSubmission = 1
+  int workloadCounter = 0
+  int aliveNodeCount = 0
+
+
+  Mutex nodeRegister = new Mutex()
+  //Not in use
+  int BLOCKSIZE = 64000
+
+  static List workloadsAvailable = new List()
+
+  void streamHandler(TCPSocket s)
+  {
+    char command[]
+    char buf[]
+    int len
+    int memoryRequired
+    int coresRequired
+
+    while ((buf = s.recv(1)).arrayLength > 0 && buf != "\r" && buf != "\n")
+    {
+      command = new char[](command, buf)
+    }
+
+    if (buf != "\r" && buf != "\n")
+    {
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]:Error: Client disconnected prematurely ($command)")
+      s.disconnect()
+      return
+    }
+
+    out.println("Command:: $command")
+    String ops[] = stringUtil.explode(command, "\\")
+    NetworkEndpoint ne = s.getRemoteEndpoint()
+    out.println("client address: $(ne.address):$(iu.intToString(ne.port))")
+
+    for(int i = 0; i < ops.arrayLength; i++)
+    {
+      out.println("$(ops[i].string)")
+    }
+
+    char appType[] = ops[0].string
+
+    if (stringUtil.iequal(appType,"register"))
+    {
+        String nodeManagerAdd[] = stringUtil.explode(ne.address, ":")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: NodeManager($(nodeManagerAdd[0].string)) registered to the Resource Manager")
+        //Registers the new nodeManagers prperties with the Scheduler and AppManager for
+        //validating and processing resource requests (E.g. cannot exceed nodes resource capacity)
+        scheduler.registerNodeManager("$(nodeManagerAdd[1].string):$(ops[1].string)")
+        appMngr.addNodeManager("$(nodeManagerAdd[1].string):$(ops[1].string)")
+        aliveNodeCount++
+    }
+    //TODO add comment of if statement controlling else if
+    else if(!stringUtil.iequal(appType,"register"))
+    {
+      //[0] = previous workload completed [1] = next workload to be completed
+      String workloadRequest[] =stringUtil.explode(command,"/")
+
+      if(commandLineSubmission==1)
+      {
+      if(workloadsAvailable.getLength()>0){
+      for(Workload wl = workloadsAvailable.getFirst(); wl != null; wl = workloadsAvailable.getNext())
+        {
+          out.println("Workload: $(iu.intToString(wl.workloadNo))-$(wl.workloadDir)")
+          if(iu.intFromString(workloadRequest[0].string)==wl.workloadNo){
+            wl.completed = true
+            workloadsAvailable.remove(wl)
+          }
+        }
+        for(Workload wl = workloadsAvailable.getFirst(); wl != null; wl = workloadsAvailable.getNext())
+        {
+          if(iu.intFromString(workloadRequest[1].string)==wl.workloadNo && wl.completed == false)
+          {
+            paramsHandler(wl)
+          }
+        }
+      }else{
+        commandLineSubmission = 0
+        out.println("INFO: Command-line arg Workloads completed, Switching to User Submission.")
+        timer.sleep(2000)
+      }//End For Workload wl
+
+      //End if commandLineSubmission == 1
+      }  //appMngr.AppSubmission validates submitted app before submitting to Scheduler
+      else{
+        appMngr.AppSubmission(command)
+      }
+    }//end else
+  }//end streamhandler
+
+  void paramsHandler(Workload wl){
+    out.println("Resource Manager waiting for inital NodeManager")
+    while(aliveNodeCount<1){
+      out.print(".")
+      timer.sleep(1000)
+    }
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]:Entered Command Line submission Stream Handler")
+      //TODO ingest dir containing workload fileSystem
+      //read contents of workload file/list submission (typically a batch of 20 for testing)
+      String wDir[] = stringUtil.explode(wl.workloadDir,"/")
+      String wFile[] = stringUtil.explode(wDir[wDir.arrayLength-1].string,".")
+      char workloadFilename[] = wFile[0].string
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Submitted workload ($(workloadFilename)) to Application Manager for job scheduling")
+      scheduler.workloadControl(wl.workloadNo,workloadFilename)
+      TextFile f = new TextFile(wl.workloadDir, File.FILE_ACCESS_READ)
+      while(!f.eof())
+        {
+          //for each application within the workload, submit to App Manager Service
+          char line[] = f.readLine()
+          appMngr.AppSubmission(line)
+          timer.sleep(300)
+        }
+
+      //TODO break workload files into individiaul commands
+      //for each command appSubmission
+
+      //When complete increment workload submission count to submit second array
+
+      //if max do nothing
+  }
+
+  //applicationMasterLauncher()
+  void heartbeat ()
+  {
+    UDPServer heartbeatMaster = new UDPServer()
+    heartbeatMaster.bind(UDPServer.ANY_ADDRESS, 2021)
+    while(true)
+    {
+      Datagram contents = heartbeatMaster.recv()
+
+      out.print("NM:$(contents.address) offers $(contents.content) thread/memory-GB")
+      out.println("from: $(contents.address):$(iu.intToString(contents.port))")
+      String node[] = stringUtil.explode(contents.address, ":")
+      //out.println(node[1].string)
+      scheduler.scheduleApplication(new char[]("$(contents.content)"))
+    }
+  }//End of heartbeat
+
+  int App:main (AppParam params[])
+  {
+  	
+  	scheduler = new Scheduling()
+  	appMngr = new ApplicationManager()
+  	appMstrServ = new AppMasterService()
+  	
+  	appMngr.setScheduler(scheduler)
+  	appMstrServ.setScheduler(scheduler)
+    scheduler.setAppMasterService(appMstrServ)  	
+    //if App params exist
+    //if(params.arrayLength > 0){
+   char logOriginIP[] = ""
+   TextFile tf = new TextFile("master.txt", File.FILE_ACCESS_READ)
+  	while(!tf.eof()) {
+		  char line[] = tf.readLine()
+      logOriginIP = line
+    }
+    log.logStartup(compName,logOriginIP)
+    if(commandLineSubmission == 1){
+      out.println("WARNING: User Submissions will not be allowed until all Command-line arg workloads are completed.")
+      timer.sleep(2000)
+      //sets command line submission as true
+      //The resource manager will only be able to complete the initally given workloads
+      // Once completed the resource Manager will halt and reset the command line submission value
+      // this will allow user submission to the resource manager again
+      // NOTE all user submissions are ignored until command line arguement workloads are completed
+      commandLineSubmission = 1
+
+      //for(int i = 0; i < params.arrayLength; i++){
+
+    // TODO [MODIFICATION]: Adjust the workload to be a short series of mixed granularity
+      String workloadFiles[] = stringUtil.explode("./Workloads/MG/MG-W1.txt~./Workloads/FG/FG-W1.txt~./Workloads/CG/CG-W1.txt~./Workloads/MG/MG-W2.txt~./Workloads/FG/FG-W2.txt~./Workloads/CG/CG-W2.txt~./Workloads/MG/MG-W3.txt~./Workloads/FG/FG-W3.txt~./Workloads/CG/CG-W3.txt~./Workloads/MG/MG-W4.txt~./Workloads/FG/FG-W4.txt~./Workloads/CG/CG-W4.txt~./Workloads/MG/MG-W5.txt~./Workloads/FG/FG-W5.txt~./Workloads/CG/CG-W5.txt","~")
+      for(int i = 0; i < workloadFiles.arrayLength; i++){
+      workloadsAvailable.add(new Workload(workloadCounter, workloadFiles[i].string ,false))
+      workloadCounter++
+      }
+
+      for(Workload wl = workloadsAvailable.getFirst(); wl != null; wl = workloadsAvailable.getNext())
+      {
+        out.println("Workload: $(iu.intToString(wl.workloadNo)) Dir: $(wl.workloadDir) Completed: $(iu.intToString(wl.completed)) ")
+      }
+      Workload wl = workloadsAvailable.getFirst()
+      asynch::paramsHandler(wl)
+    }
+    out.println("Starting Listener")
+    asynch::heartbeat()
+    TCPServerSocket Mhost = new TCPServerSocket()
+    Mhost.bind(TCPServerSocket.ANY_ADDRESS, 2012)
+    while (true)
+    {
+      //out.println("Listening for user submitted requests")
+      TCPSocket client = new TCPSocket()
+      if (client.accept(Mhost))
+      asynch::streamHandler(client)
+    }
+    return 0
+  }
+
+}

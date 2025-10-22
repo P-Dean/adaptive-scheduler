@@ -1,0 +1,117 @@
+/*
+Scheduling components:
+Naive Fair / +Greedy
+First In First Out /+Greedy
+Dominant Resource Fairness /+Greedy
+*/
+
+uses data.adt.List
+uses data.StringUtil
+uses net.TCPSocket
+uses time.DateTime
+uses AppMasterService
+//NOTE: Hash Table may be more efficient here, deendent on sca$
+
+// split inital parsing into two seperate functions, reading a$
+// resource request and application id, with byte payload for $
+// sub function
+
+//if appId contains "-" then AppId = executor launch request
+data RunningExecutors{
+  int appID
+//  char AMIP[]
+//  int AMPORT
+  char NMIP[]
+  int allocatedCores
+  int allocatedMemory
+  //NOT FUNCIONING: Set as a flag for whether it was used in p$
+//  bool RackAwareness
+//  int Priority
+//  bool registered
+}
+data RunningAppShare{
+  int appId
+  String applicationName
+  int allocatedCores
+  int allocatedMemory
+  dec share
+}
+
+//total resources taken per running application
+data AppResources{
+  int appID
+  int cores
+  int memory
+}
+
+data TimeStamps{
+  char applicationName[]
+  DateTime start
+  DateTime end
+  int difference
+  int startSysStartApp
+  int startSysEndApp
+  char execStartTime[]
+}
+
+//Applicaitions with a AM running tasks within the cluster
+data RunningApplication{
+  int appId
+  String applicationName
+  char resultsDir[]
+  bool complete
+  int allocatedCores
+  int allocatedMemory
+  dec share
+}
+
+//Queue for submitted resource applications
+data LaunchingApplication{
+  int appId
+  String applicationName
+  String appFileDir
+  String applicationData
+  int coresRequired
+  int memoryRequired
+  char executorParameters[]
+  int numPartitions
+  bool amRequested
+}
+
+//Worker node/resource availability
+data NodeManager{
+  char nmID[]
+  int availableCores
+  int availableMemory
+}
+
+interface Scheduling {
+  // Not a Launching/running applications appID,
+  // applicationId is uniquely assigned to each application accross all scheduler behaviours
+  // only assigned if an Application is initially submitted and accepted
+	transfer int applicationId
+
+  transfer int workloadId  //NOTE TESTING PURPOSES ONLY
+  transfer char workloadFilename[] //NOTE TESTING ONLY
+
+  // Lists of custom type containing nodemanager and application details
+	transfer NodeManager nmList[]
+	transfer LaunchingApplication juList[]
+	transfer RunningApplication jaList[]
+  transfer AppResources arList[]
+  transfer RunningAppShare rsList[]
+  transfer RunningExecutors eList[]
+
+
+  //TEST only
+  void workloadControl(int id, char filename[])
+
+  //Functions for Scheudler
+  void scheduleApplication (char nmUpdate[])
+  int deploy(TCPSocket client, store LaunchingApplication job, NodeManager n)
+  void registerNodeManager(char nodeManagerInfo[])
+  void submitToScheduler (char appSubmitted[])
+  void removefromScheudler(char appName[])
+  
+  void setAppMasterService(store AppMasterService svc)
+}

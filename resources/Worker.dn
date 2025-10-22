@@ -1,0 +1,3 @@
+interface Worker{
+  void executor(int execId, char execIP[], int execPort, int totalCores, int totalMemory, char amIp[], int amPort, int amID)  
+}

@@ -1,0 +1,21 @@
+//Greedy
+
+component provides ExecutorAllocation requires {
+
+  void ExecutorAllocation:shutdown(){
+  }
+
+
+  bool ExecutorAllocation:receiveSchedulingData(){
+    return true
+  }
+  bool ExecutorAllocation:initialise(char setupParams[]){
+    return true
+  }
+  int ExecutorAllocation:policy (int tasksTotal){
+    return 0
+  }
+
+  void ExecutorAllocation:addExecToBeRemoved(int execId){}
+  void ExecutorAllocation:addExecutors(int maxNeedExec){}
+}

@@ -1,0 +1,4 @@
+//interface resourceSchedulerBackend{
+//  void submitToScheduler (char appRequest[])
+//  void scheduleApplication (char contents[])
+//}

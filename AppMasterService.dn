@@ -1,0 +1,388 @@
+// AppMasterService
+// Registration & Termination
+// Allocation & De-allocation Requests
+// FOR ALL AM
+
+data pendingExecRequests{
+  char applicationName[]
+  char nodeIP[]
+  int cores
+  int memory
+}
+
+data allocatedExecRequests {
+  int appID
+  char nmIp[] // AppMasters YA IP
+  int coresAllocated
+  int memoryAllocated
+}
+
+data AppMstrRegistered{
+  int appID
+  char applicationName[]
+  // YarnAllocator Socket for given AM
+  char amAddress[]
+  int amPort
+  int execCount
+}
+
+// receive a target and additially receives updates on what executors need to be removed
+//    makes upp scalling and descalling based on idle executors
+
+component provides AppMasterService requires AppMstrLiveMonitor amlm, io.Output out,
+data.adt.List, net.UDPServer udp, net.TCPSocket, data.IntUtil iu, data.StringUtil stringUtil,
+net.TCPServerSocket, io.TextFile, time.Calendar cal,
+time.DateUtil date, time.Timer time, Log {
+
+  Scheduling scheduler
+  
+  static Log log = new Log()
+  char compName[] = "ApplicationMasterService"
+
+  static List appMstrs = new List()
+  static List execReq = new List()
+  static List execAlloc = new List()
+
+  // restrict AppMstrRegistered within the appMstrs list
+  Mutex AppMasterList = new Mutex()
+
+  void AppMasterService:clearAMS(){
+    out.println("Clearing AMS lists...")
+    appMstrs = new List()
+    execReq = new List()
+    execAlloc = new List()
+    out.println("AMS lists cleared.")
+  }
+  
+  void AppMasterService:setScheduler(store Scheduling s)
+  	{
+  	scheduler = s
+  	}
+
+  bool AppMasterService:registerAppMaster(char amInfo[]){
+    mutex(AppMasterList){
+      //[type r - d]:",amAppName[0].string, socket,iu.intToString(amID)))
+      //    out.println("AM-INFO:$(amInfo)")
+      out.println("[AMS-Register recevied]: $(amInfo)")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] AMS-RegisterAM recevied: $(amInfo)")
+      bool newEntry = true
+      String amReqType[] = stringUtil.explode(amInfo, ":")
+      String amReqParams[] = stringUtil.explode(amReqType[1].string,"\\")
+      //    for (int i = 0; i < amReqParams.arrayLength; i++) {
+      //      out.println("AM-REQPARAMS[$(iu.intToString(i))]:$(amReqParams[i].string)")
+      //    }
+      //NOTE generates a App Master Startup Exeception, requires response to YarnRMC to removethe cause of the exception
+      if(stringUtil.iequal(amReqType[0].string, "d")){
+        //MUTEX restrct access to
+        for(AppMstrRegistered am = appMstrs.getFirst(); am != null; am = appMstrs.getNext()){
+          if(stringUtil.iequal(amReqParams[0].string,am.applicationName)){
+            newEntry = false
+            appMstrs.remove(am)
+            scheduler.removefromScheudler(amReqParams[0].string)
+            out.println("[AMS]: Removing Application Master $(iu.intToString(am.appID))-$(am.applicationName) with $(iu.intToString(am.execCount)) executors...")
+            log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Removing Application Master $(iu.intToString(am.appID))-$(am.applicationName) with $(iu.intToString(am.execCount)) executors")
+          }
+          for(allocatedExecRequests aer = execAlloc.getFirst(); aer != null; aer = execAlloc.getNext()){
+            if(aer.appID == iu.intFromString(amReqParams[3].string)){
+
+              execAlloc.remove(aer)
+              scheduler.removefromScheudler(amReqParams[0].string)
+              TCPSocket rmRsrv = new TCPSocket()
+              if(rmRsrv.connect(aer.nmIp,2033)){
+                out.println("Success:[AMS-AppMasterRegister] Releasing executor for $(iu.intToString(aer.appID)) on node $(aer.nmIp)\n\n")
+                log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Success:[AMS-AppMasterRegister] Releasing executor for $(iu.intToString(aer.appID)) on node $(aer.nmIp) ")
+                rmRsrv.send("release:$(iu.intToString(aer.appID))\n")
+                rmRsrv.disconnect()
+              }
+              else{
+                //Failed removal of reservations will be cleaned up at the termination of appplication masters, as executor heartbeats will prompt a shutdown after consecutive fail t cnnect errors.
+                out.println("Error:[AMS-AppMasterRegister] Failed to remove reservation for $(amReqParams[3].string) on node $(aer.nmIp)")
+                log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR:[AMS-AppMasterRegister] Failed to remove reservation for $(amReqParams[3].string) on node $(aer.nmIp) ")
+              }
+            }
+          }
+        }
+
+        for(allocatedExecRequests aer = execAlloc.getFirst(); aer != null; aer = execAlloc.getNext()){
+          out.println("-----[AMS] REMAINING EXECUTOR CONTAINERS $(iu.intToString(aer.appID))")
+        }
+        return true
+      }
+      else if(stringUtil.iequal(amReqType[0].string, "c")){
+        //    mutex(AppMasterList){
+        out.println("Info[AMS]: Entered Update $(amInfo)")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] AMS: Entered Update $(amInfo)")
+        out.print("Info[AMS] currently running AM within AMS register:")
+        for(AppMstrRegistered amr = appMstrs.getFirst(); amr != null; amr = appMstrs.getNext()){
+          out.print("$(amr.applicationName),")
+        }
+        for(AppMstrRegistered am = appMstrs.getFirst(); am != null; am = appMstrs.getNext()){
+          out.println("UPDATE COMPARISON: $(amReqType[1].string)-- $(am.applicationName)")
+          if(stringUtil.iequal(amReqType[1].string,am.applicationName))
+          {
+            am.amPort = iu.intFromString(amReqType[2].string)
+            out.println("Success[AMS-AppMasterRegister]: Update to $(amInfo) completed")
+            log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Success[AMS-AppMasterRegister]: Update to $(amInfo) completed")
+            return true
+          }
+        }
+        return false
+      }
+      else if(stringUtil.iequal(amReqType[0].string, "r")){
+        out.println("Register AM Data Type: $(iu.intFromString(amReqParams[3].string)),$(amReqParams[0].string),$(amReqParams[1].string),$(iu.intFromString(amReqParams[2].string)),0")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Success[AMS-AppMasterRegister]: Register AM Data Type: $(iu.intFromString(amReqParams[3].string)),$(amReqParams[0].string),$(amReqParams[1].string),$(iu.intFromString(amReqParams[2].string)),0")
+        appMstrs.add(new AppMstrRegistered(iu.intFromString(amReqParams[3].string),amReqParams[0].string,amReqParams[1].string,iu.intFromString(amReqParams[2].string),0))
+        execReq.add(new pendingExecRequests())
+        out.println("[AMS]: Registering Application Master $(amReqParams[3].string)")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Completed registering Application Master $(amReqParams[3].string) ")
+        return true
+      }
+      else{
+        out.println("Error:[AMS-AppMasterRegister] Received malformed Application Master request")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR:[AMS-AppMasterRegister] Received malformed Application Master request ")
+        return false
+      }
+      return false
+    }//End mutex(AppMasterList){
+  }//End registerAppMaster
+
+
+    void retrieveAllocation(char execRequest[]){
+      mutex(AppMasterList){
+      TCPSocket sendYA = new TCPSocket()
+
+      char executorAllocations[] = null
+      out.println("[AMS]: Received request \n $(execRequest)\n\n")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Received request: $(execRequest) ")
+      out.println("Allocations available for AppID:")
+      for(allocatedExecRequests aers = execAlloc.getFirst(); aers != null; aers = execAlloc.getNext()){
+  //      out.println("Allocation: $(iu.intToString(aers.appID))")
+      }
+
+//       a :      3-127.0.0.1-2142-2-2000000     :       4-127.0.0.1-2142-2-2000000       :
+//MUTEX
+      AppMstrRegistered reqToAM
+      bool found = false
+      // applicationId, nodeMngrID, coresReq, memReq
+      allocatedExecRequests allocExecReq
+      for(AppMstrRegistered amr = appMstrs.getFirst(); amr != null; amr = appMstrs.getNext()){
+        if(amr.appID == iu.intFromString(execRequest)){
+          out.println("[AMS]: App ID found...")
+
+          for(allocatedExecRequests aer = execAlloc.getFirst(); aer != null; aer = execAlloc.getNext()){
+              if(aer.appID == iu.intFromString(execRequest)){
+                found = true
+                out.println("[AMS]: Exec Alloc Found")
+                amr.execCount++
+                executorAllocations = new char[](executorAllocations,iu.intToString(aer.appID),"\\" ,aer.nmIp,"\\" ,iu.intToString(aer.coresAllocated),"\\" ,iu.intToString(aer.memoryAllocated),"\\",iu.intToString(amr.execCount),"-")
+                allocExecReq = aer
+              }
+          }//End for Alloc
+          out.println("[Retrieve-Alloc]:Attempting to send to: $(amr.amAddress):$(iu.intToString(amr.amPort))")
+          log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] AMS:RetrieveAllocaton: Attempting to send executors to: $(amr.amAddress):$(iu.intToString(amr.amPort)) ")
+          if (sendYA.connect(amr.amAddress, amr.amPort))
+            {
+              sendYA.send(new char[](executorAllocations, "\n"))
+              out.println("********[AMS SENDING TO YA $(amr.amAddress):$(iu.intToString(amr.amPort))]: $(executorAllocations)")
+              log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] AMS sending to YA[$(amr.amAddress):$(iu.intToString(amr.amPort))]: $(executorAllocations) (this can be blank, this means no executors were available to be assigned at this time)")
+              sendYA.disconnect()
+              execAlloc.remove(allocExecReq)
+              break
+            }
+            else
+            {
+            out.println("Could not connect to host")
+            log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] AMS:RetrieveAllocation: could not connect to Appllication master $(amr.amAddress):$(iu.intToString(amr.amPort))")
+            }
+
+        }//If AMR App Id == App Id
+      }//End For AppMstrs
+      if (found == false){
+      }
+      }//end of mutex(AppMasterList){
+    }
+
+    void AppMasterService:submitAllocation(char execRequest[])
+    {
+      //Queue for submitted resource applications
+      //Add    //retrive
+//      a :     1-127.0.0.1-2142-2-2000000
+//      -1:     1-127.0.0.1-2142-2-2000000
+//      -2
+      //  a:1~Example-50473079-2-2000000:2
+      out.println("[AMS]: Received Allocation: $execRequest")
+      String parseexecReq[] = stringUtil.explode(execRequest,"~")
+      if(parseexecReq.arrayLength>1)
+      {
+        String requestsToBeSent[] = stringUtil.explode(parseexecReq[1].string,":")
+        String requestParams[] = stringUtil.explode(requestsToBeSent[0].string, ",")
+        for (int i = 0; i < requestsToBeSent.arrayLength; i++) {
+          scheduler.submitToScheduler("$(requestParams[0].string): : :$(requestParams[1].string):$(requestParams[2].string):--:0")
+          out.println("SENDING TO SCHEDULER: $(requestParams[0].string): : :$(requestParams[1].string):$(requestParams[2].string):--:0")
+          log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] AMS submitting executor to scheduler: $(requestParams[0].string): : :$(requestParams[1].string):$(requestParams[2].string):--:0")
+        }
+      }
+//      else{
+//      retrieveAllocation(appId[1].string)
+//      }
+      else {
+        out.println("[AMS]: $(parseexecReq[0].string)")
+        String appId[] = stringUtil.explode(parseexecReq[0].string,":")
+        retrieveAllocation(appId[1].string)
+      }//char applicationRequest[] = ("$()\\$(appFile)\\$(appData)\\$(iu.intToString(driverCores))\\$(iu.intToString(driverMemory))\\$(iu.intToString(execCount))-$(iu.intToString(execCores))-$(iu.intToString(execMemory))")
+/*
+      data LaunchingApplication{
+        int appId
+        String applicationName
+        String appFileDir
+        String applicationData
+        int coresRequired
+        int memoryRequired
+        char executorParameters[]
+        bool amRequested
+      }
+*/
+      //appID
+      //nodeMngrID
+      //coresReq
+      //memReq
+    }
+
+  void AppMasterService:addAllocation(int applicationId ,char nodeMngrID[],int coresReq,int memReq)
+  {
+    execAlloc.add(new allocatedExecRequests(applicationId, nodeMngrID,coresReq,memReq))
+  }
+
+  //Change to receive the pushAMResRequests of RM
+  char[] AppMasterService:receiveAllocation(int applicationId ,char nodeMngrID[],int coresReq,int memReq)
+  {
+    mutex(AppMasterList){
+      TCPSocket resrv = new TCPSocket()
+      TCPSocket aliveCheck = new TCPSocket()
+      //int appId,char nmID[],int coresAllocated, int memoryAllocated
+      for(AppMstrRegistered amr = appMstrs.getFirst(); amr != null; amr = appMstrs.getNext())
+      {
+        if(amr.appID == applicationId)
+        {
+          if (resrv.connect(nodeMngrID, 2033))
+          {
+            out.println("[Receive-Alloc]:Attempting to send $(iu.intToString(applicationId)) executor to NodeManager: $(nodeMngrID) [AM Check: $(amr.amAddress):$(iu.intToString(amr.amPort))]")
+            log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] AMS:receiveAllocation: Attempting to send $(iu.intToString(applicationId)) executor to NodeManager: $(nodeMngrID) [AM Check: $(amr.amAddress):$(iu.intToString(amr.amPort))] ")
+            if(aliveCheck.connect(amr.amAddress,amr.amPort))
+            {
+              resrv.send("reserve:$(iu.intToString(applicationId)):$(iu.intToString(coresReq))|$(iu.intToString(memReq))\n")
+              char command[]
+              char buf[]
+              int len
+              while ((buf = resrv.recv(1)).arrayLength > 0 && buf != "\r" && buf != "\n")
+              {
+                command = new char[](command, buf)
+              }
+              if (buf != "\r" && buf != "\n")
+              {
+                out.println("Error[Executor-Reservation]: NodeManager disconnected prematurely ($command)")
+                log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Error[Executor-Reservation]: NodeManager disconnected prematurely ($command) ")
+                resrv.disconnect()
+                aliveCheck.disconnect()
+                return null
+              }
+              out.println("********* [AMS] ReservationSent:[$(nodeMngrID)] reserve:$(iu.intToString(applicationId)):$(iu.intToString(coresReq))|$(iu.intToString(memReq)) \n")
+              log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ReservationSent:[$(nodeMngrID)] reserve:$(iu.intToString(applicationId)):$(iu.intToString(coresReq))|$(iu.intToString(memReq))  ")
+              resrv.disconnect()
+              aliveCheck.disconnect()
+              return command
+            }
+            else
+            {
+              out.println("Failed to connect to Application Master for Reservation")
+              log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Failed to connect to Application Master for Reservation $(amr.amAddress):$(iu.intToString(amr.amPort))")
+              resrv.disconnect()
+              return null
+              //aliveCheck.disconnect()
+            }
+          }
+          else
+          {
+            out.println("Failed to connect to NodeManager")
+            log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] AMS:receiveAllocation: Failed to connect to NodeManager ")
+            return null
+            }//End else TCP send to NM
+          }
+        }
+        out.println("[AMS]: Application Master $(iu.intToString(applicationId)) is not registered, reservation denied. ")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Application Master $(iu.intToString(applicationId)) is not registered, reservation denied. ")
+        return null
+    }//end of mutex(AppMasterList)
+  }//end func
+
+  void streamHandler(TCPSocket s){
+    char command[]
+    char buf[]
+    int len
+
+    while ((buf = s.recv(1)).arrayLength > 0 && buf != "\r" && buf != "\n")
+    {
+      command = new char[](command, buf)
+    }
+    if (buf != "\r" && buf != "\n")
+    {
+      out.println("Error: Client disconnected prematurely ($command)")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR: Client disconnected prematurely ($command) ")
+      s.disconnect()
+      return
+    }
+
+    //example-command: Type[reg/dereg/alloc/dealloc]:appID\nodeIP+YAport\ExecReqRM
+    //out.println("TEST-SHOW-COMMAND: $command")
+    String commandType[] = stringUtil.explode(command, ":")
+    for (int i = 0; i < commandType.arrayLength; i++) {
+      //        out.println("SHOW-commandType: $(commandType[i].string)")
+    }
+    // a = allocate || u = unallocate
+    //reqType:executorRequest[]
+    //String commandParams[] = stringUtil.explode(commandType[1].string,"\\")
+    if(stringUtil.iequal(commandType[0].string,"a") || stringUtil.iequal(commandType[0].string,"u")){
+      //checkAllocations(commandParams[1].string)
+      submitAllocation(command)
+    }
+    // r = register || d = deregister
+    //reqType: AppName, appID, amSocket[ip:port]
+    else if(stringUtil.iequal(commandType[0].string,"r") || stringUtil.iequal(commandType[0].string,"d") || stringUtil.iequal(commandType[0].string,"c") ){
+      int registerSuccess = registerAppMaster(command)
+      if(stringUtil.iequal(commandType[0].string,"r")){
+        s.send(new char[]("$(iu.intToString(registerSuccess))\n"))
+        out.println("\n\n New App Master \n\n")
+      }
+      else if(stringUtil.iequal(commandType[0].string,"c")){
+        s.send(new char[]("$(iu.intToString(registerSuccess))\n"))
+        out.println("\n\n Updated Existing App Master \n\n")
+      }
+    }
+    else{
+      out.println("Error:[AMS-RequestHandler] Malformed Application Master request received")
+    }
+    s.disconnect()
+  }//end streamhandler
+
+  void AppMasterService:beginAppMstrServ(){
+    //TEST ENTRY: USED TO TEST YA RECEIVING EXECUTOR allocations
+    //execAlloc.add(new allocatedExecRequests(1, "127.0.0.1",2,2000000))
+
+    char resourceManagerIP[]
+    TextFile tf = new TextFile("master.txt", File.FILE_ACCESS_READ)
+    while(!tf.eof()) {
+      char line[] = tf.readLine()
+      resourceManagerIP = line
+    }
+    TCPServerSocket AppMsterReq = new TCPServerSocket()
+    AppMsterReq.bind(resourceManagerIP, 2014)
+    while (true)
+    {
+      TCPSocket client = new TCPSocket()
+      if (client.accept(AppMsterReq)){
+        asynch::streamHandler(client)
+      }
+    }
+  }//End beginAppMstrServ
+
+}

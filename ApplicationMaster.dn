@@ -1,0 +1,217 @@
+/*******************************************
+* Application Master provides Master node  *
+* instance (Driver) for Executors for the  *
+* duration of a single running application *
+*******************************************/
+
+data ExecutorsReady{
+  int execID
+  int coresAvailable
+  int memoryAvailable
+  int timeIdle
+}
+
+// TaskSets are created from a given dn file and txt file, with executors to load the
+//files entirety to mem max into an array and then run the task sets tasks (dn file) on a core,
+// NOTE task sets spawn 5 identical tasks [keeping executors busy]
+
+data TaskSets{
+    int taskSetId
+    char execDir[]
+    char dataDir[]
+    int setNo
+    bool complete
+}
+
+//SPARK/YARN: APPLICATION MANAGER
+component provides JobController requires net.TCPSocket, data.StringUtil stringUtil, net.UDPServer udp,
+io.Output out,io.File, io.TextFile, data.IntUtil iu, data.adt.List, time.Timer timer, TaskScheduling taskScheduler{
+
+  //AM identifying properties
+  int amID
+  char amIP[]
+  int amPort[]
+  char elIP[]
+  int elPort
+  int trueCount = 0
+  bool registered
+  List execReg = new List()
+  List taskSets = new List()
+
+  //TODO Seperate into individual component running on async thread (allowing differing policies and DynamicAllocation enabled = True)
+  //NOTE Function was orginally a part of the AM not a Component/references may still persist for non essential functions (i.e. cmd output and recording of executoed commands [SEE AM dataStruct])
+  void executorListener(){
+    out.println("[AM-$(iu.intToString(amID))]:Starting Listener...")
+    UDPServer heartbeatAppMaster = new UDPServer()
+    while(!heartbeatAppMaster.bind(elIP, elPort)){
+      out.println("Failed to bind requesting new socket from $(amIP)")
+      TCPSocket requestNewPort = new TCPSocket()
+      if (requestNewPort.connect(amIP, 2033))
+          {
+        requestNewPort.send("reqPort:$(iu.intToString(amID))-$(iu.intToString(elPort))\n")
+        char portRecv[] = ""
+        char buf[]
+        while ((buf = requestNewPort.recv(1)).arrayLength > 0 && buf != "\r" && buf != "\n")
+        {
+          portRecv = new char[](portRecv, buf)
+        }
+        out.println("Received new Port")
+        elPort = iu.intFromString(portRecv)
+        requestNewPort.disconnect()
+      }
+      else
+      {
+        out.println("-----------ERROR: Failed to connect to NodeManager: $(amIP)")
+      }
+
+    }
+    while(true){
+      bool completedAll = true
+      //char execUpdate = new char[](iu.intToString(execId), execIP, iu.intToString(execPort),iu.intToString(cores),iu.intToString(memory), iu.intToString(idletime) )
+
+      Datagram contents = heartbeatAppMaster.recv()
+
+      String package[] = stringUtil.explode(contents.content, ":")
+//      out.println("[AM-$(iu.intToString(amID))]:Received heartbeat from executor: $(package[0].string)")
+    //  for(int i = 0; i < package.arrayLength; i++){
+    //    out.println("$(package[i].string)")
+    //  }
+      //Check if all tacks are completed, if they are shutdown
+
+//NOTE All task completed check could be moved into scheduler
+      if(package[6].string.arrayLength > 1){
+//        out.println("[Exec-ID]: $(package[0].string)\n[Exec-Socket]: $(package[1].string):$(package[2].string)\n[Threads Available]: $(package[3].string)\n[Idle Timer]: $(package[5].string)\n[Tasks Completed]: $(package[6].string)\n")
+//        out.println("TASK SET COMPLETED")
+        String taskSetsCompleted[] = stringUtil.explode(package[6].string, "-")
+//        for(int i = 0; i < taskSetsCompleted.arrayLength; i++){
+//          out.println("$(taskSetsCompleted[i].string)")
+//        }
+      for(TaskSets ts = taskSets.getFirst(); ts != null; ts = taskSets.getNext()){
+          for (int i = 0; i < taskSetsCompleted.arrayLength; i++) {
+            if(ts.taskSetId == iu.intFromString(taskSetsCompleted[i].string) && ts.complete != true){
+              ts.complete = true
+              taskScheduler.removeFromRunning(ts.taskSetId)
+              break
+           }
+         }
+        }
+
+        for(TaskSets ts = taskSets.getFirst(); ts != null; ts = taskSets.getNext()){
+          if(ts.complete == false){
+//            out.println("[AM-$(iu.intToString(amID))]: $(iu.intToString(ts.taskSetId)) has not been completed")
+            completedAll = false
+          }
+        }
+        if(completedAll == true){
+          out.println("[AM-$(iu.intToString(amID))]:All TaskSets Completed...")
+          active = false
+          heartbeatAppMaster.unbind()
+          taskScheduler.shutdown()
+          break
+        }
+      }
+      //Else param[6] of heartbeat = "0", register the executor
+      else{
+      //END SHUTDOWN CHECK
+      //out.print("data: $(contents.content)")
+      //out.println("from: $(contents.address):$(iu.intToString(contents.port))")
+      String node[] = stringUtil.explode(contents.address, ":")
+      //schedulerAM.scheduleApplication(new char[]("$(contents.content)"))
+      bool execRegistered = false
+      if(execReg.getLength() > 0){
+//        out.println("[AM-$(iu.intToString(amID))]: Adding Executor ")
+        for(ExecutorsRegistered er = execReg.getFirst(); er != null; er = execReg.getNext()){
+          if(er.execId == iu.intFromString(package[0].string)){
+              //execReg.update(er, new ExecutorsRegistered())
+              execRegistered = true
+          }
+        }//End For
+      }
+//      else
+//      {
+//        // exec id : cores : memory : execIP : execPort : timeIdle
+//        //  Add to AM Data                                         (iu.intToString(iD),":",address,":",iu.intToString(port),":",iu.intToString(totalCores),":",iu.intToString(totalMemory),":",iu.intToString(idletime),":",iu.intToString(taskscompleted) )
+//        execReg.add(new ExecutorsRegistered(iu.intFromString(package[0].string), iu.intFromString(package[3].string), iu.intFromString(package[4].string), node[0].string, iu.intFromString(package[2].string), iu.intFromString(package[5].string)))
+//        //Add to Task Scheduler Data
+//        taskScheduler.addExecutorProperties(iu.intFromString(package[0].string), iu.intFromString(package[3].string), iu.intFromString(package[4].string), node[0].string, iu.intFromString(package[2].string), iu.intFromString(package[5].string))
+//        execRegistered = true
+//      }
+      if(execRegistered == false){
+//        out.println("[AM-$(iu.intToString(amID))]: Adding Executor")
+        //Add To AM
+        execReg.add(new ExecutorsRegistered(iu.intFromString(package[0].string), iu.intFromString(package[3].string), iu.intFromString(package[4].string), node[0].string, iu.intFromString(package[2].string), iu.intFromString(package[5].string)))
+        //Add to Task Scheduler
+        taskScheduler.addExecutorProperties(iu.intFromString(package[0].string), iu.intFromString(package[3].string), iu.intFromString(package[4].string), node[0].string, iu.intFromString(package[2].string), iu.intFromString(package[5].string))
+
+      }
+    }
+      //Schedule for given Executor
+      taskScheduler.ScheduleTaskSet("$(package[0].string):$(package[3].string)-$(package[4].string)")
+    }//End while
+  }//End Executor Listener
+
+  bool JobController:initialise( char amReq[], char socket[] ,int amidentifier, char amAppName[], char resourceMasterIP[]){
+    String reqPars[] = stringUtil.explode(amReq, "-")
+    String amPortNo[] = stringUtil.explode(socket,":")
+    amID = amidentifier
+//    out.println("TEST-AM: $amReq")
+
+    // Pass amId to TaskSetScheduler in turn passing setup params to EA & YA
+    // char regReq = new char[]("reg:",reqPars[0].string,iu.intFromString(amID),socket)
+    return taskScheduler.initialiseValues(iu.intFromString(amPortNo[1].string),amID, iu.intFromString(reqPars[0].string), amReq,amAppName,elPort,elIP,resourceMasterIP)
+  }
+
+  //NOTE: A Scheduler exists within RM and AM, currently no Function is available
+  // for partitioning incoming Apps to Stages [DAG Scheduler]
+  void createTaskSets(char executableName[],char inputDataName[],int partitions){
+    int taskSetId = 1
+    int setNo = 5 // no addiitonal sets are to be created at this moment
+//    out.println("CREATE-TASK-SETS: $executableName - $(iu.intToString(partitions))")
+    for (int i = 0; i < partitions; i++) {
+      taskSets.add(new TaskSets(taskSetId,executableName,inputDataName,setNo, false))
+      taskScheduler.submitTaskSet(taskSetId,executableName,inputDataName,setNo)
+      taskSetId++
+    }
+  }
+  bool active = true
+  //Application Master within a YARN/Spark Instance is a merger of both the AM and a Spark Driver
+  void JobController:ApplicationMaster(char amRequest[], char socket[], int amidentifier,char yaSocket[],char resourceMasterIP[]){
+    List tasksRemaining = new List()
+    List executorRequests = new List()
+  //  out.println("AM-RQ: $(amRequest)")
+    bool initialised = false
+    String yaSocketParsed[] = stringUtil.explode(yaSocket,":")
+    elIP = yaSocketParsed[0].string
+    elPort = iu.intFromString(yaSocketParsed[1].string)
+    amID = amidentifier
+
+    //incoming request format
+    //lamReq  :  1  :  APP|AliceDTRH.txt  :  1|1000000
+    // int App:main(AppParam AppParams[]){
+    // char file[] = "example.txt"
+    // char amRequest[] = "job|examples.txt"
+    String amParsedRequest[] = stringUtil.explode(amRequest, ":")
+    String resourceRequest[] = stringUtil.explode(amParsedRequest[2].string, "|")
+    String dataRequest[] = stringUtil.explode(amParsedRequest[1].string, "|")
+
+    //Executor Parameters [for YarnAllocator], aplication master socket, application master id
+//    out.println("[AM-$(iu.intToString(amID))]: Initialising components... $(amParsedRequest[3].string) \n")
+    while(initialised == false){
+    // INITIALISE (ExecParams, applicationmaster socket, amID [unique identifier per nodemanager])
+    initialised = initialise(amParsedRequest[3].string, socket,amidentifier,dataRequest[0].string,resourceMasterIP)
+    taskScheduler.requestExecutor(amParsedRequest[3].string)
+    createTaskSets(amParsedRequest[4].string,dataRequest[1].string,iu.intFromString(amParsedRequest[5].string))
+    }
+    //out.println("[AM-$(iu.intToString(amID))]:PASSED INITIALISE")
+    //    for(int i = 0; i < amParsedRequest.arrayLength;i++){
+    //      out.println("$(iu.intToString(i)):$(amParsedRequest[i].string)")
+    //    }
+
+      out.println("[AM-$(iu.intToString(amID))]: Listening for Executors....")
+      while(active){
+        executorListener()
+      }
+
+  }//end Am func
+
+}//End Component

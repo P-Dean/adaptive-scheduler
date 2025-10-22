@@ -1,0 +1,3 @@
+interface ConvertArray{
+Data[] convertArrayType(Type t, Data array[])
+}

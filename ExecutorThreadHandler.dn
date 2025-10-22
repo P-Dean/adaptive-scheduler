@@ -1,0 +1,382 @@
+
+data Task{
+  int taskSetId
+  char taskSetExecutable[]
+  char taskSetData[]
+  bool completed
+}
+
+data WorkerThread {
+	Thread thread
+  int no
+	char work[]
+	bool workSet
+
+	WorkerThread next
+}
+
+uses App
+component provides Worker requires data.adt.List, io.Output out, Loader loader,data.IntUtil iu, net.TCPSocket, net.TCPServerSocket,
+io.FileSystem fileSystem, io.File, data.StringUtil stringUtil, time.Calendar cal, time.DateUtil date, time.Timer time,
+net.UDPClient udp, os.Run run, composition.RecursiveLoader rload, ExecutorThread, Log{
+
+  static Log log = new Log()
+  char compName[] = ""
+
+
+   int iD
+   char eIP[]
+   int ePort
+   //AM Socket
+   char address[]
+   int port
+
+   int amID
+   //Memory and cores
+   int totalMemory = 0
+   int totalthreads = 0
+   int activeThreads = 0
+
+   int taskscompleted
+
+   int idletime
+
+   List tasksGiven = new List()
+   List taskSets = new List()
+
+   DateTime idleCheck
+   DateTime maxIdleTime
+   bool shutdown = false
+   bool idle = true
+   int taskSetTotal = 0
+   int taskSetsAssigned = 0
+   int tsCompleteCount = 0
+
+
+ 	bool setupDone
+  bool stateUpdate = true
+ 	WorkerThread workers
+ 	WorkerThread lastWorker
+ 	WorkerThread lastUsedWorker
+ 	bool destroying
+
+  Mutex poolLock = new Mutex()
+
+void amHeartbeat(){
+  int executorCounter = 0
+  while(!shutdown){
+    mutex(poolLock){
+    char taskSetsCompleted[] = ""
+    char taskSetsIncomplete[] = ""
+    for(TaskSet ts = taskSets.getFirst(); ts != null; ts = taskSets.getNext()){
+      if(ts.complete == true){
+        taskSetsCompleted = new char[](taskSetsCompleted, iu.intToString(ts.taskSetId),"-")
+      }
+      else{
+        taskSetsIncomplete = new char[](taskSetsIncomplete, iu.intToString(ts.taskSetId),"-")
+      }
+    }
+    if(taskSetsCompleted.arrayLength < 1){
+      taskSetsCompleted = "0"
+    }
+
+    byte datagram[]
+    char execUpdate[]
+
+    //If active threads has changed value since the last heartbeat, send update, else send still alive heartbeat
+//    if(stateUpdate){
+      //out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))]: Starting Heartbeat, continuously sending Sending to: $(address):$(iu.intToString(port)) UdateInfo $(execUpdate)")
+      execUpdate = new char[](iu.intToString(iD),":",eIP,":",iu.intToString(ePort),":",iu.intToString(totalthreads-activeThreads),":",iu.intToString(totalMemory),":",iu.intToString(idletime),":",taskSetsCompleted)
+      datagram = execUpdate
+//      stateUpdate = false
+//    }
+//    else{
+//      execUpdate = new char[](iu.intToString(iD),":",eIP,":",iu.intToString(ePort),":","x",":",iu.intToString(totalMemory),":",iu.intToString(idletime),":",taskSetsCompleted)
+//      datagram = execUpdate
+//    }
+    //int port = 2041
+    out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))]: Id:$(iu.intToString(iD))|Threads available: $(iu.intToString(totalthreads-activeThreads))/$(iu.intToString(totalthreads)) | idle-time:$(iu.intToString(idletime)) | Tasks Completed:$(taskSetsCompleted) | Tasks Incomplete:$(taskSetsIncomplete)  | AM Socket $(address):$(iu.intToString(port))")
+
+    //Log every 10th executor heartbeat
+    executorCounter++
+    if(executorCounter==0||executorCounter==11){
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Summary: [AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))]: Id:$(iu.intToString(iD))|Threads available: $(iu.intToString(totalthreads-activeThreads))/$(iu.intToString(totalthreads)) | idle-time:$(iu.intToString(idletime)) | Tasks Completed:$(taskSetsCompleted) | Tasks Incomplete:$(taskSetsIncomplete)  | AM Socket $(address):$(iu.intToString(port)) ----  Heartbeat Sent: $(execUpdate)")
+      executorCounter=1
+    }
+
+    if(udp.send(address,port,datagram)==false){
+      out.print("< Error: udp send() false [Attempted to send: $(execUpdate)]>")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: < Error: udp send() false [Attempted to send: $(execUpdate)]>")
+
+    }
+  }
+    time.sleep(5000)
+  }
+}
+
+//Doing X
+	void workerThread(WorkerThread state) {
+		while (true) {
+			this.thread.wait()
+
+			if (state.workSet == true) {
+
+        mutex(poolLock)
+        {
+          activeThreads++
+          stateUpdate = true
+        }
+
+				char w[]
+
+				mutex(state) {
+					w = state.work
+				}
+				//DO WORK [EXECUTOR]
+        out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))-THREAD-$(iu.intToString(state.no))]: Beginning work on $(w)")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] [AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))-THREAD-$(iu.intToString(state.no))]: Beginning work on $(w)")
+
+        ExecutorThread  executorThread = new ExecutorThread()
+				taskSets.add(executorThread.begin(w,amID,iD,state.no))
+
+        mutex(state) {
+          state.workSet = false
+				}
+
+        mutex(poolLock)
+        {
+          activeThreads--
+          stateUpdate = true
+        }
+        out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))-THREAD-$(iu.intToString(state.no))]: Completed work on $(w)")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] [AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))-THREAD-$(iu.intToString(state.no))]: Completed work on $(w)")
+
+			}
+
+			if (destroying && state.workSet == false)
+				break
+		}
+	}
+
+  //Create Thread pool
+  	void setup() {
+  		if (! setupDone) {
+  			//configure the thread pool
+
+  			for (int i = 0; i < totalthreads; i++) {
+  				WorkerThread nwt = new WorkerThread()
+  				nwt.thread = asynch::workerThread(nwt)
+          nwt.no = i
+          nwt.workSet = false
+  				if (lastWorker == null)
+  					workers = nwt
+  				else
+  					lastWorker.next = nwt
+
+  				lastWorker = nwt
+  			}
+
+  			setupDone = true
+  		}
+  	}
+
+    //Get Thread to use
+  	WorkerThread getWorkerFor(char ts[]) {
+  		//TODO: decide on the policy to assign a TaskSet to a worker thread
+  //    out.println("EXEC ----- SELECTING ---- THREAD")
+
+      WorkerThread w = workers
+      while (w != null)
+        {
+        if (w.workSet == false)
+          return w
+        w = w.next
+        }
+
+      return null
+    }
+
+    void handleRequest(char ts[]) {
+
+  		char nwi[] = ts
+
+      WorkerThread wt
+
+      mutex(poolLock)
+      {
+  		wt = getWorkerFor(ts)
+
+  		mutex(wt) {
+  				wt.work = nwi
+          wt.workSet = true
+        }
+      }
+  		wt.thread.signal()
+    }
+
+    char[] streamHandler(TCPSocket s){
+    char command[]
+    char buf[]
+    while ((buf = s.recv(1)).arrayLength > 0 && buf != "\r" && buf != "\n")
+    {
+      command = new char[](command, buf)
+    }
+
+    if (buf != "\r" && buf != "\n")
+    {
+      out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))] Error: Client disconnected prematurely ($command)")
+      s.disconnect()
+      return null
+    }
+    String formCheck[] = stringUtil.explode(command, ";")
+
+    // 26678268266753
+    // Constantanople
+    if(iu.intFromString(formCheck[0].string) == 26678268266753){
+
+    String commandParsed[] = stringUtil.explode(formCheck[1].string, ":")
+    if(iu.intFromString(commandParsed[0].string) == 0){
+      out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))]: Received Shutdown Order...")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Received Shutdown Order ")
+      shutdown = true
+      s.disconnect()
+      return null
+    }
+    else
+    {
+      //NOTE update currently not entered (furture use: altering procurement/scheduling resources within AM)
+      char resourceUpdate[]="update"
+      mutex(poolLock)
+      {
+        if(getWorkerFor(command)!=null){
+        s.send(new char[]("1\\",resourceUpdate,"\n"))
+        s.disconnect()
+        out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))]: Check passed and resources available.")
+        return formCheck[1].string
+        }
+        //No available thread found
+        else{
+          s.send(new char[]("0\\",resourceUpdate,"\n"))
+          return null
+        }
+      }
+    }
+    }
+    else{
+      out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))] Error: form check failed")
+      return null
+    }
+
+  }//End StreamHandler
+
+
+void Worker:executor(int execId, char execIP[], int execPort, int tCores, int tMemory, char amIp[], int amPort, int amId){
+  //Startup
+  //while(executorProperties.registered != true){
+  //Register to applicationMaster
+
+  //  2\ 127.0.0.1 \ 2143 \ 2\2000000 \ 127.0.0.1\2143
+
+
+  iD = execId
+  amID = amId
+  compName = "AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))"
+  out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(execId))]: Setting Executor Variables... [EXEC]: $(execIP):$(iu.intToString(execPort)) [AM]: $(amIp):$(iu.intToString(amPort))")
+  //Receives tasks
+  TCPServerSocket execTasks = new TCPServerSocket()
+  TCPSocket client = new TCPSocket()
+  //socket of the application master to send heartbeats to
+  address = amIp
+  port = amPort
+
+  //socket of the current executor, sent to am upon registering to allow receiving of tasks
+  eIP = execIP
+  ePort = execPort
+  //Calulate total threads & memory for executor
+  totalthreads = tCores - 1
+  totalMemory = tMemory
+
+  //to be passed to individual threads, creating tasks to be completed on a given thread (5 tasks per set)
+  char command[] = ""
+
+
+  //While Executor socket has not successfully binded to an avialable port, repeat
+  while(!execTasks.bind(execIP, ePort))
+  {
+    out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))]: Failed to bind requesting new socket from $(execIP)")
+    log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Failed to bind requesting new socket from $(execIP) ")
+    TCPSocket requestNewPort = new TCPSocket()
+    if (requestNewPort.connect(execIP, 2033))
+    {
+      requestNewPort.send("reqPort:$(iu.intToString(amID))$(iu.intToString(iD))-$(iu.intToString(execPort))\n")
+      char portRecv[] = ""
+      char buf[]
+      while ((buf = requestNewPort.recv(1)).arrayLength > 0 && buf != "\r" && buf != "\n")
+      {
+        portRecv = new char[](portRecv, buf)
+      }
+      out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))]: Received new Port: $(portRecv) ")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Received new Port: $(portRecv) ")
+      ePort = iu.intFromString(portRecv)
+      requestNewPort.disconnect()
+    }
+    else
+    {
+      out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))] Error: Failed request new port connect to nodemanager $(execIP)")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR: Failed request new port connect to nodemanager $(execIP)")
+    }
+  }
+  //Create port pool of size (total cores - 1 [-1 core = amheartbeat])
+  setup()
+
+  //start the registration process on AM and allow the receiving of TaskSets
+  out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(execId))]: Registering to application master...")
+  log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Executor Deployed and connecting to Applicaiton Master")
+  Thread hbThread = asynch::amHeartbeat()
+
+  //Shutdown is invoked once all tasksets have been completed withhin the AM's taskset list
+  while(!shutdown){
+      if (client.accept(execTasks))
+      command  = streamHandler(client)
+      //If null then the returned command was not for a thread and invokes a function in the handler
+      if(command != null){
+        //Selects thread and passes a task set to be executed
+        out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))]: Received and handling TaskSet: $(command) ")
+        handleRequest(command)
+      }
+    }
+
+//  out.println("$(execIP):$(iu.intToString(execPort))")
+  //join heartbeat (asynch thread run on startup of executor)
+  hbThread.join()
+  execTasks.unbind()
+  client.disconnect()
+
+  //Release resource reservation made by executor on the given NodeManager
+  //Invokes the "Release" else if within Nodemanager::Streamhandler
+  TCPSocket releaseResources = new TCPSocket()
+  if (releaseResources.connect(execIP, 2033))
+      {
+    releaseResources.send("release:$(iu.intToString(amID))$(iu.intToString(iD))\n")
+    releaseResources.disconnect()
+  }
+  else
+  {
+    out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(iD))] Error: Failed to release resources")
+  }
+  //End else TCP send to NM
+  //  nmTaskSetRecv.bind(TCPServerSocket.ANY_ADDRESS, 2044)
+  //    TCPSocket nmMaster = new TCPSocket()
+  //    if(nmMaster.accept(nmTaskSetRecv))
+  //    streamHandler()
+  //pass to command output that executor succesfully exited
+  out.println("[AM-$(iu.intToString(amID))-EXEC-$(iu.intToString(execId))]: Exiting...")
+
+  //TODO: Dump contents of out.println into NodeManagers Log (providing post analysis of actions taken)
+
+  //End
+
+  }//end executor
+
+
+}

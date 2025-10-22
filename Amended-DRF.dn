@@ -1,0 +1,767 @@
+/******************************************
+* DRF scheulder focuses on optimising     *
+* for dominant resource usage, allocating *
+* containers by the resource shares     *
+******************************************/
+
+component provides Scheduling(AdaptEvents) requires data.adt.List, data.IntUtil iu,
+data.DecUtil du, data.StringUtil stringUtil, net.TCPSocket, io.Output out,io.File,
+data.query.Sort sort, ConvertArray ca, time.Calendar cal,
+time.DateUtil date, time.Timer timer, Log{
+
+ AppMasterService AppMstrServ
+
+  static Log log = new Log()
+  char compName[] = "Scheduling:DRF.dn"
+// NOTE log arguement call:           log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: REGISTERED NodeManagerID: $(nmRegister[0].string), Containing resources: Cores: $(nmRegister[1].string) Memory: $(nmRegister[2].string)")
+
+
+
+  List queue = new List()
+  List workers = new List()
+  List submittedApps = new List()
+  List completedApps = new List()
+  List resourceShare = new List()
+  List appRes = new List()
+  List executors = new List()
+  List timeStamps = new List()
+
+  int maxCapacity = 3
+  int totalCCores = 0
+  int totalCMemory = 0
+
+  int workloadCount = 1
+
+  void AdaptEvents:inactive()
+  {
+    //flatten list contents to transfer state, Data[] getContents
+
+    //NodeManager x[] = getContents()
+    nmList = ca.convertArrayType(typeof(NodeManager), workers.getContents())
+    juList = ca.convertArrayType(typeof(LaunchingApplication), queue.getContents())
+    jaList = ca.convertArrayType(typeof(RunningApplication), submittedApps.getContents())
+    rsList = ca.convertArrayType(typeof(RunningAppShare), resourceShare.getContents())
+  }
+
+  void AdaptEvents:active()
+  {
+    //unpack list contents from transfer state
+    //out.println("CONTENT LENGTH: $(iu.intToString(content.arrayLength))")
+    for (int i = 0; i < nmList.arrayLength; i++)
+    {
+      workers.add(clone nmList[i])
+    }
+    for (int j = 0; j < juList.arrayLength; j++)
+    {
+      queue.add(clone juList[j])
+    }
+    for (int k = 0; k < jaList.arrayLength; k++)
+    {
+      submittedApps.add(clone jaList[k])
+    }
+    for (int l = 0; l < rsList.arrayLength; l++)
+    {
+      resourceShare.add(clone rsList[l])
+    }
+  }
+  
+  void Scheduling:setAppMasterService(store AppMasterService svc)
+  	{
+  	AppMstrServ = svc
+  	}
+
+  void Scheduling:workloadControl(int id, char filename[])
+  {
+    //IF the given workload ID == expected workload ID, save filename for results file
+    out.println("ID-COMPARE:$(iu.intToString(id)):$(iu.intToString(workloadId))")
+    if(id == workloadId)
+    {
+      out.println("-__-Workload Accpeted: $(filename)")
+      workloadFilename = filename
+    }
+  }
+
+  void clearSchedulerContents()
+  {
+    out.println("Clearing contents of queue...")
+    //Clear contents of queue (shouldnt need to be performed but is here incase of error in blocking user submission)
+      queue = new List()
+    out.println("Queue cleared.\n")
+
+    out.println("Clearing contents of running applications...")
+    //Clear contents of submittedApps
+      submittedApps  = new List()
+    out.println("Running Applications cleared.\n")
+
+    out.println("Clearing contents of completed applications...")
+    //Clear contents of completedApps
+    completedApps = new List()
+    out.println("Completed Applications cleared.\n")
+
+    out.println("Clearing contents of application resource shares ...")
+    //Clear contents of resourceShare
+      resourceShare = new List()
+    out.println("Application resource shares cleared.\n")
+
+
+    out.println("Clearing contents of executor list...")
+      executors = new List()
+    out.println("Executors cleared.\n")
+
+    out.println("Clearing contents of timestamp records...")
+    //Clear contents of timeStamps
+      timeStamps = new List()
+    out.println("Timestamps cleared.\n")
+
+    out.println("Resetting AppID counter...")
+    applicationId = 0
+
+    workloadCount++
+  }
+
+  void logExecEvent(int execAMID){
+    char appname[] = ""
+    int timestampMill = date.toMilliseconds(cal.getTime())
+    for(RunningApplication ra = submittedApps.getFirst(); ra != null; ra = submittedApps.getNext())
+    {
+      if(execAMID == ra.appId){
+        appname = ra.applicationName.string
+      }
+    }
+    for(TimeStamps ts = timeStamps.getFirst(); ts != null; ts = timeStamps.getNext())
+    {
+      if(stringUtil.iequal(appname, ts.applicationName))
+      {
+        ts.execStartTime = new char[](ts.execStartTime, "$(appname)-$(iu.intToString(timestampMill)))","\t")
+      }
+    }
+  }
+
+  //TODO link to log component as INFO,
+  void logAppEvent(char appname[]){
+    bool found = false
+    if(timeStamps.getLength()>0)
+    {
+      for(TimeStamps ts = timeStamps.getFirst(); ts != null; ts = timeStamps.getNext())
+      {
+        if(stringUtil.iequal(appname, ts.applicationName))
+        {
+          ts.end = cal.getTime()
+          ts.difference = date.toMilliseconds(ts.end) - date.toMilliseconds(ts.start)
+          found = true
+        }
+      }
+      if(found == false )
+      {
+        //        out.println("\\//ADDING ----TIMESTAMP")
+        timeStamps.add(new TimeStamps(appname, cal.getTime(),cal.getTime(),0,0,0,""))
+      }
+    }
+    else
+    {
+      //        out.println("\\//ADDING ----TIMESTAMP")
+      timeStamps.add(new TimeStamps(appname, cal.getTime(),cal.getTime(),0,0,0,""))
+    }
+    for(TimeStamps ts = timeStamps.getFirst(); ts != null; ts = timeStamps.getNext())
+        {
+//          out.println("\\//\\//\\//TIMESTAMP AVAILABLE FOR: $(ts.applicationName):$(iu.intToString(ts.difference))")
+        }
+    out.println("-_-_|TimestampLength($(iu.intToString(timeStamps.getLength()))\n-_-_|$(iu.intToString(completedApps.getLength()))\n")
+
+    //if all aps have a partial timestamp and completed apps length == 20 (workload size)
+    if(timeStamps.getLength() >= 21 && completedApps.getLength() >= 20)
+    {
+//      for(TimeStamps ts = timeStamps.getFirst(); ts != null; ts = timeStamps.getNext())
+//      {
+//        out.println("\\//\\//\\//TIMESTAMP AVAILABLE FOR: $(ts.applicationName):")
+        //        out.println("\\//$(iu.intToString(ts.start.day))-$(iu.intToString(ts.start.hour))-$(iu.intToString(ts.start.minute))-$(iu.intToString(ts.start.second))-$(iu.intToString(ts.start.millisecond))")
+        //        out.println("\\//$(iu.intToString(ts.end.day))-$(iu.intToString(ts.end.hour))-$(iu.intToString(ts.end.minute))-$(iu.intToString(ts.end.second))-$(iu.intToString(ts.end.millisecond))")
+        //        out.println("\\//$(iu.intToString(ts.difference))")
+//      }
+      for(TimeStamps ts = timeStamps.getFirst(); ts != null; ts = timeStamps.getNext())
+      {
+        if(stringUtil.iequal("SETUP-TIMES", ts.applicationName))
+        {
+          ts.end = cal.getTime()
+          ts.startSysStartApp =  date.toMilliseconds(ts.start)
+          ts.startSysEndApp =  date.toMilliseconds(ts.end)
+          ts.difference = date.toMilliseconds(ts.end) - date.toMilliseconds(ts.start)
+          for(TimeStamps tsB = timeStamps.getFirst(); tsB != null; tsB = timeStamps.getNext())
+          {
+              tsB.startSysStartApp =  date.toMilliseconds(tsB.start) - ts.startSysStartApp
+              tsB.startSysEndApp = date.toMilliseconds(tsB.end) - ts.startSysStartApp
+          }
+        }
+      }
+
+      TimeStamps fn = timeStamps.getFirst()
+      File f = new File("results/Workload_DRF_6-$(iu.intToString(workloadCount))-$(iu.intToString(fn.start.hour))-$(iu.intToString(fn.start.minute)).txt", File.FILE_ACCESS_WRITE)
+      for(TimeStamps ts = timeStamps.getFirst(); ts != null; ts = timeStamps.getNext()) {
+        char input[] = "$(ts.applicationName),$(iu.intToString(ts.start.day))-$(iu.intToString(ts.start.hour))-$(iu.intToString(ts.start.minute))-$(iu.intToString(ts.start.second)),$(iu.intToString(ts.start.millisecond)),$(iu.intToString(ts.end.day))-$(iu.intToString(ts.end.hour))-$(iu.intToString(ts.end.minute))-$(iu.intToString(ts.end.second)),$(iu.intToString(ts.end.millisecond)),$(iu.intToString(ts.difference)),$(iu.intToString(ts.startSysStartApp)),$(iu.intToString(ts.startSysEndApp)),$(ts.execStartTime)\n"
+        f.write(input)
+      }
+//      out.println("\n FILE-CLOSING \n\n\n")
+      f.close()
+
+      out.println("WORKLOAD COMPLETE RESETTING RESOURCE MANAGER")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: All jobs for the submitted workloads have been completed, the resource manager will now reset variables and sleep for 3 minutes before starting the next workload")
+      clearSchedulerContents()
+      AppMstrServ.clearAMS()
+      //TODO INSERT CLLEAN UP
+      //TODO tcp ResourceManager as a command user to force counter++ on workload assignment
+
+      out.println("SLEEPING FOR 3 MINUTES")
+      timer.sleep(300000)
+
+      //Set workload start timestamp
+      timeStamps.add(new TimeStamps("SETUP-TIMES",cal.getTime(),cal.getTime(),0,0,0,""))
+
+      out.println("REQUESTIING NEXT WORKLOAD")
+      TCPSocket RMclient = new TCPSocket()
+      if (RMclient.connect("127.0.0.1", 2012))
+      {
+        RMclient.send(new char[](iu.intToString(workloadId),"/",iu.intToString(workloadId+1), "\n"))
+        RMclient.disconnect()
+        workloadId = workloadId+1
+      }
+      else
+      {
+        out.println("ERROR: Scheduler could not connect to RM")
+      }
+
+      }//End If 20
+    }//End func logAppEvent
+
+      int Scheduling:deploy(TCPSocket client, LaunchingApplication job, NodeManager n){
+//        out.println("/////////////////// Start of $(job.applicationName.string)")
+        if (client.connect(n.nmID, 2033))
+        {
+          client.send("$(iu.intToString(job.appId)):$(job.applicationName.string)|$(job.applicationData.string):$(iu.intToString(job.coresRequired))|$(iu.intToString(job.memoryRequired)):$(job.executorParameters):$(job.appFileDir.string):$(iu.intToString(job.numPartitions))\n")
+          //client.recv(success, failedDeloyUpdate)
+          char command[]
+          char buf[]
+          int len
+          while ((buf = client.recv(1)).arrayLength > 0 && buf != "\r" && buf != "\n")
+          {
+            command = new char[](command, buf)
+          }
+          if (buf != "\r" && buf != "\n")
+          {
+            out.println("Error[Scheduling-Deploy]: Client disconnected prematurely ($command)")
+            log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: ")
+            client.disconnect()
+            return 0
+          }
+          out.println("SENDING:$(iu.intToString(job.appId)):$(job.applicationName.string)|$(job.applicationData.string):$(iu.intToString(job.coresRequired))|$(iu.intToString(job.memoryRequired)):$(job.executorParameters):$(job.appFileDir.string):$(iu.intToString(job.numPartitions))\n")
+          log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Scheduling:Deploy is sending the following to $(n.nmID) :$(iu.intToString(job.appId)):$(job.applicationName.string)|$(job.applicationData.string):$(iu.intToString(job.coresRequired))|$(iu.intToString(job.memoryRequired)):$(job.executorParameters):$(job.appFileDir.string):$(iu.intToString(job.numPartitions)) ")
+
+          String receivedDeployUpdate[] = stringUtil.explode(command, "\\")
+          bool success = iu.intFromString(receivedDeployUpdate[0].string)
+
+  //        out.println("Success Value: $(receivedDeployUpdate[0].string)")
+          char deloyUpdate[] = receivedDeployUpdate[1].string
+          if (success == 0)
+          {
+            out.println("*Deploy Failure: $(iu.intToString(job.appId)):$(job.applicationName.string)|$(job.applicationData.string):$(iu.intToString(job.coresRequired))|$(iu.intToString(job.memoryRequired)):$(job.executorParameters):$(job.appFileDir.string) \n")
+            log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Deploy Failure: $(iu.intToString(job.appId)):$(job.applicationName.string)|$(job.applicationData.string):$(iu.intToString(job.coresRequired))|$(iu.intToString(job.memoryRequired)):$(job.executorParameters):$(job.appFileDir.string) ")
+
+            correctNode(deloyUpdate)
+            client.disconnect()
+            return 0
+          }
+          else
+          {
+            //add else
+            out.println("*Deploy Success: $(iu.intToString(job.appId)):$(job.applicationName.string)|$(job.applicationData.string):$(iu.intToString(job.coresRequired))|$(iu.intToString(job.memoryRequired)):$(job.executorParameters):$(job.appFileDir.string) \n")
+            log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Deploy Success: $(iu.intToString(job.appId)):$(job.applicationName.string)|$(job.applicationData.string):$(iu.intToString(job.coresRequired))|$(iu.intToString(job.memoryRequired)):$(job.executorParameters):$(job.appFileDir.string) ")
+
+            client.disconnect()
+            logAppEvent(job.applicationName.string)
+            submittedApps.add(new RunningApplication(job.appId,job.applicationName, "output", false,job.coresRequired,job.memoryRequired,0))
+            resourceShare.add(new RunningAppShare(job.appId,job.applicationName,job.coresRequired,job.memoryRequired,0))
+            queue.remove(job)
+            //out.println("CALC-CHECK: $(iu.intToString(n.availableCores-job.coresRequired))")
+  //          out.println("NODE:$(n.nmID),$(iu.intToString(n.availableCores)),$(iu.intToString(n.availableMemory))")
+            return 1
+          }
+        }
+        else
+        {
+          out.println("Failed to connect to NodeManager")
+          log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR: failed to connect to nodemanager [Scheduling:deploy]")
+
+          return 0
+        }//End else TCP send to NM
+    }
+
+        Mutex nodeRegister = new Mutex()
+
+		void startAppMasterService(){
+			AppMstrServ.beginAppMstrServ()
+		}
+		
+        void Scheduling:registerNodeManager(char nodeManagerInfo[]){
+        mutex(nodeRegister){
+          if(workers.getLength()==0){
+            asynch::startAppMasterService()			
+            timeStamps.add(new TimeStamps("SETUP-TIMES",cal.getTime(),cal.getTime(),0,0,0,""))
+          }
+          String nmRegister[] = stringUtil.explode(nodeManagerInfo, ":")
+          log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: REGISTERED NodeManagerID: $(nmRegister[0].string), Containing resources: Cores: $(nmRegister[1].string) Memory: $(nmRegister[2].string)")
+          //Adds NM to workers (NodeManagerID,Total Cores,Total Memory)
+          workers.add(new NodeManager(nmRegister[0].string,iu.intFromString(nmRegister[1].string),iu.intFromString(nmRegister[2].string)))
+          totalCCores += iu.intFromString(nmRegister[1].string)
+          totalCMemory += iu.intFromString(nmRegister[2].string)
+        }
+      }
+
+        void correctNode(char nodeManagerInfo[])
+        {
+        //parse heartbeats
+        String update[] = stringUtil.explode(nodeManagerInfo,":")
+        String resUpdate[] = stringUtil.explode(update[1].string,"-")
+        //cycle through nodemanager for corresponging N
+
+        for (NodeManager nm = workers.getFirst(); nm != null; nm = workers.getNext())
+          {
+          if (stringUtil.iequal(nm.nmID,update[0].string))
+            {
+            // update n to reflect new stats
+//            out.println("Received correction for NodeManager[$(nm.nmID)]: Threads-$(resUpdate[0].string) Memory-$(resUpdate[1].string) (Current information on NodeManager: Threads-$(iu.intToString(nm.availableCores)) Memory-$(iu.intToString(nm.availableMemory)))")
+            nm.availableCores = iu.intFromString(resUpdate[0].string)
+            nm.availableMemory = iu.intFromString(resUpdate[1].string)
+            }
+          }
+        }
+
+        void updateNode(NodeManager nm, LaunchingApplication la)
+        {
+          nm.availableCores = nm.availableCores - la.coresRequired
+          nm.availableMemory = nm.availableMemory - la.memoryRequired
+        }
+
+        void Scheduling:removefromScheudler(char appname[]){
+
+          //Remove all unassigned executors for the given appname
+          for(LaunchingApplication job = queue.getFirst(); job != null; job = queue.getNext())
+          {
+            if(stringUtil.iequal(job.applicationName.string, appname))
+            {
+              queue.remove(job)
+              out.println("*RE*M*O*V*E: $(job.applicationName.string) ")
+              log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Removed $(job.applicationName.string) ")
+
+            }
+          }
+
+
+          //Move Application master from submittedApps to completedApps and remove from submittedApps
+
+          for(RunningApplication ra = submittedApps.getFirst(); ra != null; ra = submittedApps.getNext())
+          {
+            if(stringUtil.iequal(ra.applicationName.string, appname))
+            {
+              //Clear any reservations made to NodeManagers which have not yet been used by the Application
+              for(RunningExecutors re = executors.getFirst(); re != null; re = executors.getNext())
+              {
+                if (re.appID==ra.appId)
+                {
+                  TCPSocket removeReservation = new TCPSocket()
+                  out.println("Attempting to connect to $(re.NMIP) [remove reservation $(iu.intToString(ra.appId))]")
+                  log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Attempting to connect to $(re.NMIP) [remove reservation $(iu.intToString(ra.appId))]")
+
+                  if(removeReservation.connect(re.NMIP,2033))
+                  {
+                    out.println("[RM]: Releasing reservation $(iu.intToString(re.appID)):$(re.NMIP)")
+                    log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Releasing reservation $(iu.intToString(re.appID)):$(re.NMIP)")
+
+                    removeReservation.send("release:$(iu.intToString(ra.appId))\n")
+                    removeReservation.disconnect()
+                    executors.remove(re)
+                  }
+                  else
+                  {
+                    out.println("[RM] Error: failed to remove reservation within NodeManager-$(re.NMIP)")
+                    log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR: failed to remove reservation within NodeManager-$(re.NMIP) ")
+
+                  }
+                }
+              }
+
+              completedApps.add(ra)
+              submittedApps.remove(ra)
+              out.println("End of $(appname)")
+              log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Application $(appname) has ended")
+
+              logAppEvent(appname)
+              break
+            }
+          }
+
+        }
+
+        Mutex submitApp = new Mutex()
+
+        void Scheduling:submitToScheduler(char appSubmitted[])
+        {
+          mutex(submitApp)
+          {
+            String appInfo[] = stringUtil.explode(appSubmitted, ":")
+            out.println("\n$(appInfo[0].string)--$(appInfo[1].string)\n\n")
+            if(appInfo[1].string.arrayLength>1)
+            {
+              applicationId++
+              //data LaunchingApplication{      int appId /String applicationName /String appFileDir/String applicationData/int coresRequired /      int memoryRequired//  char executorParameters[]
+              queue.add(new LaunchingApplication(applicationId,appInfo[0],appInfo[1],appInfo[2],iu.intFromString(appInfo[3].string),iu.intFromString(appInfo[4].string),appInfo[5].string,iu.intFromString(appInfo[6].string),false))
+              out.println("Submitted Application Master: $(iu.intToString(applicationId)):$(appInfo[0].string) ")
+              log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Submitted Application Master: $(iu.intToString(applicationId)):$(appInfo[0].string)")
+
+            }
+            else
+            {
+              //data LaunchingApplication{      int appId /String applicationName /String appFileDir/String applicationData/int coresRequired /      int memoryRequired//  char executorParameters[]
+              queue.add(new LaunchingApplication(0,appInfo[0],appInfo[1],appInfo[2],iu.intFromString(appInfo[3].string),iu.intFromString(appInfo[4].string),appInfo[5].string,iu.intFromString(appInfo[6].string),false))
+              out.println("**Submitted Executor: $(iu.intToString(applicationId)):$(appInfo[0].string) ")
+              log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Submitted Executor: $(iu.intToString(applicationId)):$(appInfo[0].string)")
+              out.println("applications-AVAILABLE:$(iu.intToString(queue.getLength()))")
+              log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Number of running application Masters:$(iu.intToString(queue.getLength()))")
+
+            }
+          }
+        }//End of func
+
+	/*
+	[from https://cs.stanford.edu/~matei/papers/2011/nsdi_drf.pdf]
+
+	Algorithm 1 DRF pseudo-code
+	R = (r1, · · · , rm)                 >>total resource capacities
+	C = (c1, · · · , cm)                 >>consumed resources, initially 0
+	si (i = 1..n)                        >>user i’s dominant share, initially 0
+	Ui = (ui,1, · · · , ui,m) (i = 1..n) >>resources given to
+	user i, initially 0
+
+	pick user i with lowest dominant share si
+
+	Di << demand of user i’s next task
+
+	if C + Di <= R then
+	C = C + Di                     >>update consumed vector
+	Ui = Ui + Di                   >>update i’s allocation vector
+	si = maxm j=1{ui,j/rj}
+
+	else
+	return                         >>the cluster is full
+	end if
+	*/
+	//a side issue here is that we have both "application masters", which take some resource, and "executors", which belong to execution masters, both in the same queue
+	// - so when the below function gets called (as a result of a heartbeat, indicating that some resources may have become available), it's not completely clear whether we should shedule an AM or an EX from our combined queue
+	// - obviously if we never schedule EX nothing will ever get done, but if we always schedule EX first then we might starve out fine-grained jobs if the first job to arrive is a large coarse-grained one...
+	// let's assume we have a limit of AMs deployed, which we can also set to INT_MAX
+	// - we then always deploy AMs first, if any are un-deployed
+	// - if none are un-deployed, we pick the one with the smallest resource share
+	// this algorithm is also different because we want to keep looping until the cluster is full (until we fail to allocate)
+
+	LaunchingApplication getAM()
+		{
+		for (LaunchingApplication job = queue.getFirst(); job != null; job = queue.getNext())
+			{
+			if (job.appId != 0)
+				{
+				return job
+				}
+			}
+
+		return null
+		}
+  //Deploys a single executor of the passed ApplicationMaster's entry in submittedApps
+  LaunchingApplication getFirstExecutor(RunningApplication executorAM)
+  {
+    //iterate through queue containing AM/Executors to be launched
+    for(LaunchingApplication executorAppName = queue.getFirst(); executorAppName != null; executorAppName = queue.getNext())
+    {
+      //If the executors name matches the passed Application Masters Applicaition Name (return)
+      if(stringUtil.iequal(executorAM.applicationName.string,executorAppName.applicationName.string))
+      {
+//        out.println("Executor Selected: $(executorAppName.applicationName.string)")
+        NodeManager node = null
+        //If the initally selected AMs execuotr may be deployed on a registered nodeManager, return executor
+        if((node = canDeploy(executorAppName)) != null){
+          return executorAppName
+        }
+
+      }
+    }
+
+//    LaunchingApplication altAM
+//    //iterate through all available running AMs and locate an allocatable executor, (see getNextAM) if no exector exisits, return null
+//    if((altAM = getNextAM(executorAM)) != null ){
+//      return altAM
+//    }else{
+    //Else if no matching application name is found, return null (this will end scheduling an AM's executor)
+      return null
+//    }
+  }
+
+    LaunchingApplication getNextAM(RunningApplication previousAM)
+      {
+        NodeManager node
+        // create array containing contents of submittedApps List of type RunningApplication
+        Data array[] = submittedApps.getContents()
+        //Sort array into Descending order based on Share (decimal value representing cluster resource share 0.0...1.0)
+        array = sort.sort(array, RunningApplication.[share], true)
+        //return the first element of the sorted array (lowest resource share rnning AM)
+        RunningApplication raTest = array[0]
+
+        //iterate through application masters running, srted by lowest DR share
+        for (int i = 0; i < array.arrayLength; i++)
+        {
+          RunningApplication lowestShareAM = array[i]
+          for(LaunchingApplication e = queue.getFirst(); e != null; e = queue.getNext())
+          {
+            //compare lowest share AM and executor within queue Application name
+            if (stringUtil.iequal(lowestShareAM.applicationName.string,e.applicationName.string) && !stringUtil.iequal(lowestShareAM.applicationName.string, previousAM.applicationName.string))
+            {
+//              out.println("<AppID $(iu.intToString(lowestShareAM.appId))> Next lowest AM deployed selected")
+              if(e != null && (node = canDeploy(e)) != null){
+                return e
+              }
+            }
+          }
+          //if no executor can be found check next running am
+        }
+      //If no Am with an execuotr can be found, return null (initiating the next scheduling decision upon a new heartbeat being received)
+      return null
+      }
+
+  //Return the AM with the Lowest resource share
+  RunningApplication getLowestDeployedAM()
+    {
+      // create array containing contents of submittedApps List of type RunningApplication
+      Data array[] = submittedApps.getContents()
+      //Sort array into Descending order based on Share (decimal value representing cluster resource share 0.0...1.0)
+      array = sort.sort(array, RunningApplication.[share], true)
+      //return the first element of the sorted array (lowest resource share rnning AM)
+      RunningApplication raTest = array[0]
+  //    out.println("<AppID $(iu.intToString(raTest.appId))> Lowest AM Deployed Selected")
+
+      //iterate through application masters running, srted by lowest DR share
+      for (int i = 0; i < array.arrayLength; i++)
+      {
+        RunningApplication lowestShareAM = array[i]
+        for(LaunchingApplication e = queue.getFirst(); e != null; e = queue.getNext())
+        {
+          //compare lowest share AM and executor within queue Application name
+          if (stringUtil.iequal(lowestShareAM.applicationName.string,e.applicationName.string))
+          {
+            return array[i]
+          }
+        }
+      }
+      //Display AM shares for all Running Application Masters
+      for(RunningApplication ra = submittedApps.getFirst(); ra != null; ra = submittedApps.getNext())
+      {
+//        out.println("<AppID $(iu.intToString(ra.appId)): Share $(du.decToString(ra.share))>")
+      }
+      //If no AM with executors exist return null
+      return null
+    }
+
+  void updateApplicationMaster(RunningApplication appMaster, LaunchingApplication executor)
+  {
+
+    for(RunningApplication ra = submittedApps.getFirst(); ra != null; ra = submittedApps.getNext())
+    {
+      if(stringUtil.iequal(ra.applicationName.string, appMaster.applicationName.string))
+      {
+        ra.allocatedCores += executor.coresRequired
+        ra.allocatedMemory += executor.memoryRequired
+//        out.println("CHECK-AllocCount-[$(iu.intToString(ra.allocatedMemory))/$(iu.intToString(totalCMemory))]")
+        dec cores = ra.allocatedCores
+        dec mem = ra.allocatedMemory
+//        out.println("DEC-Check-[$(du.decToString(mem))/$(du.decToString(cores))] $(du.decToString(mem/cores)) $(du.decToString(cores/totalCCores))")
+        //equalise 1GB to one core and compare for dominant resource in use
+        if (ra.allocatedCores<(ra.allocatedMemory/1048576))
+        {
+          ra.share = mem/totalCMemory
+//          out.println("UPDATED <AppID $(iu.intToString(ra.appId)): Share $(du.decToString(ra.share))> [$(iu.intToString(ra.allocatedMemory))/$(iu.intToString(totalCMemory))]")
+
+        }
+        else
+        {
+          ra.share = cores/totalCCores
+  //        out.println("UPDATED<AppID $(iu.intToString(ra.appId)): Share $(du.decToString(ra.share))> [$(iu.intToString(ra.allocatedCores))/$(iu.intToString(totalCCores))]")
+
+        }
+      }
+    }
+  }
+
+	NodeManager canDeploy(LaunchingApplication job)
+	{
+    //loop through all nodes, return one that can host "job" if possible, else return null
+    for (NodeManager nm = workers.getFirst(); nm != null; nm = workers.getNext())
+    {
+      if (nm.availableCores >= job.coresRequired && nm.availableMemory >= job.memoryRequired)
+      {
+        return nm
+      }
+    }
+  //  out.println("No suitable node found for: $(iu.intToString(job.appId))")
+//    out.println("Request for resources to be scheudled: Threads $(iu.intToString(job.coresRequired)) - Memory $(iu.intToString(job.memoryRequired))")
+//    out.println("Current nodes available:")
+    for (NodeManager nm = workers.getFirst(); nm != null; nm = workers.getNext())
+    {
+//      out.println("Node $(nm.nmID): Threads $(iu.intToString(nm.availableCores)) - Memory $(iu.intToString(nm.availableMemory))")
+    }
+    return null
+  }
+
+	void Scheduling:scheduleApplication(char nmUpdate[])
+		{
+		NodeManager n
+		RunningAppShare am
+
+    TCPSocket client = new TCPSocket()
+
+		//TODO: Create new Fair with first job aquiring max num node for request
+
+		String update[] = stringUtil.explode(nmUpdate,":")
+		String resUpdate[] = stringUtil.explode(update[1].string,"-")
+
+		for (NodeManager nm = workers.getFirst(); nm != null; nm = workers.getNext())
+			{
+			if (stringUtil.iequal(nm.nmID,update[0].string))
+				{
+				nm.availableCores = iu.intFromString(resUpdate[0].string)
+				nm.availableMemory = iu.intFromString(resUpdate[1].string)
+				n = nm
+				}
+			}
+
+		//if no jobs exist in queue, skip scheduling for node manager
+		if (queue.getFirst() != null)
+			{
+      //TODO
+			//search through submitted applications for a unique appId, this will be an application master and
+			// will be deployed instead of an executor if the following loop fails to find a 0 share running AM with no executor
+			// ---
+			//NOTE TEST: update resource utilisation of every node, based on the heartbeat
+			//TODO loop:
+				//if any AMs on queue, you try to schedule one; if that fails, quit.
+				//if no AMs on the queue, look through submittedApps to find AM (Q) with lowest dominant resource share
+				// - if Q has any executers pending scheduling, and they fit anywhere on the cluster, schedule one, else quit.
+				//--optimisation:
+				//if no AMs on the queue, look through submittedApps to find set of all AM (Q) with lowest dominant resource share
+				// - for first member of Q with an executers pending scheduling, and they fit on the cluster, schedule one, else quit.
+				//--
+			// ---
+			//NOTE: in future, we need to get the set of all undeployed AMs to see if we can deploy any of them; and get the set of all lowest AMs to see if we can deploy an executor for any of them
+			//NOTE: add a cap on application masters
+
+			while (true)
+			{
+//        out.println("Scheduler[DRF] - Current queue length:$(iu.intToString(queue.getLength())) Current running AM count: $(iu.intToString(submittedApps.getLength()))")
+				LaunchingApplication js = getAM()
+
+				NodeManager node
+        //If there exists an AM and the number of submitted AMs (running AMs) is less than max capacity, Deploy.
+				if (js != null && submittedApps.getLength() <= maxCapacity) // && maxCapacity != FULL
+					{
+					//schedule this if possible, otherwise quit.
+					//NOTE: n should be "any node in the cluster which is big enough", which is called "workers"
+					if ((node = canDeploy(js)) != null)
+          {
+						int deploySuccess  = deploy(client, js, node)
+            if(deploySuccess==1)
+            {
+              updateNode(node, js)
+              queue.remove(js)
+            }
+            else if(deploySuccess==0)
+            {
+              return
+            }
+					}
+				  else
+          {
+					  return
+          }
+				}
+        //Executor scheduling begins here
+				else
+				{
+          //return lowest running AM with deployable Executors
+					RunningApplication lowestAM = getLowestDeployedAM()
+          //if a running AM with exec found
+          LaunchingApplication executor
+          if(lowestAM!=null)
+          {
+            //return the first executor belonging to lowestAM
+            executor = getFirstExecutor(lowestAM)
+          }
+          //else no deployable Execs are available
+          else
+          {
+//            out.println("No Executors Found")
+            executor = null
+          }
+
+          for(LaunchingApplication j = queue.getFirst(); j != null; j = queue.getNext())
+          {
+//            out.println("<App$(iu.intToString(j.appId))>$(j.applicationName.string)")
+          }
+
+          //executors of lowest share running AM will be scheduled.
+          //schedule exec if exec not null and can be deployed on a node
+					if (executor != null && (node = canDeploy(executor)) != null)
+					{
+            out.println("[Exec]: Scheduling AM:$(iu.intToString(lowestAM.appId)) Executor:$(executor.applicationName.string)")
+            log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: [Exec]: Scheduling AM:$(iu.intToString(lowestAM.appId)) Executor:$(executor.applicationName.string)")
+
+
+            char command[] = AppMstrServ.receiveAllocation(lowestAM.appId,n.nmID,executor.coresRequired,executor.memoryRequired)
+            String receivedUpdate[] = stringUtil.explode(command, "\\")
+            bool success
+            if(command != null){
+              success = iu.intFromString(receivedUpdate[0].string)
+  //            out.println("Success Value: $(receivedUpdate[0].string)")
+              char deloyUpdate[] = receivedUpdate[1].string
+              if (success == 0 )
+              {
+                out.println("*Deploy Executor Failure: $(iu.intToString(lowestAM.appId)):$(iu.intToString(executor.coresRequired))|$(iu.intToString(executor.memoryRequired))\n")
+                log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Deploy Executor Failure: $(iu.intToString(lowestAM.appId)):$(iu.intToString(executor.coresRequired))|$(iu.intToString(executor.memoryRequired))")
+
+                correctNode(deloyUpdate)
+                return
+              }
+              else
+              {
+                out.println("*Deploy Executor Success: $(iu.intToString(lowestAM.appId)):$(iu.intToString(executor.coresRequired))|$(iu.intToString(executor.memoryRequired)) \n")
+                log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Deploy Executor Success: $(iu.intToString(lowestAM.appId)):$(iu.intToString(executor.coresRequired))|$(iu.intToString(executor.memoryRequired)) ")
+
+                executors.add(new RunningExecutors(lowestAM.appId,n.nmID,executor.coresRequired,executor.memoryRequired))
+                AppMstrServ.addAllocation(lowestAM.appId,n.nmID,executor.coresRequired,executor.memoryRequired)
+                logExecEvent(lowestAM.appId)
+                updateApplicationMaster(lowestAM, executor)
+                updateNode(node, executor)
+						    queue.remove(executor)
+                return
+              }
+					  }
+            else{
+              //Once entered no way to break free next iteration
+              out.println("Error: Recevied null from exec reservation")
+              log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR: Recevied null from reserving executor")
+              return
+            }
+          }
+					else
+					{
+					  return
+					}
+				}
+			}
+		}
+	}
+
+	}//End component

@@ -1,0 +1,148 @@
+/*
+
+*/
+
+
+data Seeds{
+  char seedChars[]
+  int seed
+}
+
+data workloads{
+  char filename[]
+  char dir[]
+  char contents[]
+}
+
+component provides App requires io.Output out, data.IntUtil iu,data.adt.List,
+io.FileSystem fileSystem, io.File, data.StringUtil stringUtil,io.TextFile,
+time.DateUtil date, time.Calendar cal, Scheduling, util.RandomInt ri
+{
+
+
+char[] generateSeeds(char input[]){
+int numArray[]
+//int output = 0
+char output[] = ""
+out.println("$(input)")
+input = stringUtil.lowercase(input)
+for (int i = 0; i < input.arrayLength; i++) {
+  if (input[i] == "a" || input[i] == "b" || input[i] == "c")
+  {
+    output = new char[](output, "2")
+  }
+  else if (input[i] == "d" || input[i] == "e" || input[i] == "f")
+  {
+    output = new char[](output, "3")
+  }
+  else if (input[i] == "g" || input[i] == "h" || input[i] == "i")
+  {
+    output = new char[](output, "4")
+  }
+  else if (input[i] == "j" || input[i]== "k" || input[i] == "l")
+  {
+    output = new char[](output, "5")
+
+  }
+  else if (input[i] == "m" || input[i] == "n" || input[i] == "o")
+  {
+    output = new char[](output, "6")
+  }
+  else if (input[i] == "p" || input[i] == "q" || input[i] == "r" || input[i] == "s")
+  {
+    output = new char[](output, "7")
+  }
+  else if (input[i] == "t" || input[i] == "u" || input[i] == "v")
+  {
+    output = new char[](output, "8")
+  }
+  else if (input[i] == "w" || input[i] == "x" || input[i] == "y" || input[i] == "z")
+  {
+    output = new char[](output, "9")
+  }
+  else if (input[i] == " ")
+  {
+    output = new char[](output, "0")
+  }
+  else
+  {
+    output = new char[](output, "1")
+  }
+}
+
+  out.println("$(output)\n")
+
+
+return output
+}
+
+
+  int mixedWorkloadGenCount = 1
+  int workloadCount = 0
+  String workloadDirs[] = new String[](new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\CG\\CG-W1.txt"),new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\FG\\FG-W1.txt"), new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\CG\\CG-W2.txt"),new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\FG\\FG-W2.txt"),  new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\CG\\CG-W3.txt"),new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\FG\\FG-W3.txt"),  new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\CG\\CG-W4.txt"),new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\FG\\FG-W4.txt"),  new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\CG\\CG-W5.txt"),new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\FG\\FG-W5.txt"),  new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\CG\\CG-W6.txt"),new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\FG\\FG-W6.txt"),  new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\CG\\CG-W7.txt"),new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\FG\\FG-W7.txt"),  new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\CG\\CG-W8.txt"),new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\FG\\FG-W8.txt"),  new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\CG\\CG-W9.txt"),new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\FG\\FG-W9.txt"),  new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\CG\\CG-W10.txt"),new String("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\FG\\FG-W10.txt"))
+  int App:main (AppParam params[])
+  {
+    //TODO: Add workload input file for workloads exisiting
+
+    char inputWorkloadConetents[]
+    //ingest workload files for fine and course grained workload
+    for(int i = 0; i < workloadDirs.arrayLength; i++)
+    {
+      TextFile f = new TextFile(workloadDirs[i].string, File.FILE_ACCESS_READ)
+      while(!f.eof())
+      {
+        char line[] = f.readLine()
+        inputWorkloadConetents = new char[](inputWorkloadConetents,line,",")
+      }
+    }
+    //insert into String input array
+    out.println("$(inputWorkloadConetents)")
+    //Random Gen from given seed between 0-39
+    // Mobile phone number allocated to letter from strings below (e.g. abc = 1)
+    // "Constantanople,Istanbul,New York,New Amsterdam,Berlin,London,Belfast,Edinburgh,Paris,Rome"
+
+    static List allSeeds = new List()
+    int selectedValue[20]
+    char seedInput[] =  "Constantanople,Istanbul,New York,New Amsterdam,Berlin,London,Belfast,Edinburgh,Paris,Rome"
+
+    String seedsCreated[] = stringUtil.explode(seedInput, ",")
+    String workloadList[] = stringUtil.explode(inputWorkloadConetents, ",")
+    out.println("$(iu.intToString(workloadList.arrayLength))")
+
+    for(int i = 0; i < seedsCreated.arrayLength; i++)
+    {
+    allSeeds.add(new Seeds(seedsCreated[i].string, iu.intFromString(generateSeeds(seedsCreated[i].string)) ) )
+    }
+    for (Seeds s = allSeeds.getFirst(); s != null; s = allSeeds.getNext())
+    {
+      out.println("$(s.seedChars)-$(iu.intToString(s.seed))")
+    }
+    //iterate through all seeds creating a MixedWorkload from each Seed
+    for (Seeds s = allSeeds.getFirst(); s != null; s = allSeeds.getNext())
+    {
+      File f = new File("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\MG\\MG-W$(iu.intToString(mixedWorkloadGenCount)).txt", File.FILE_ACCESS_WRITE)
+      //Use seed from above list t generate worklaods
+      // FOR 20 iterations 0-19
+      ri.setSeed(s.seed)
+      for(int i = 0; i < 20;i++)
+      {
+        selectedValue[i] = ri.get(workloadList.arrayLength)
+        out.println("$(s.seedChars)-RandomInt;$(iu.intToString(selectedValue[i]))-$(workloadList[selectedValue[i]].string)")
+        f.write("$(workloadList[selectedValue[i]].string)")
+        if(i<19){
+          f.write("\n")
+        }
+      }
+      out.println("\n FILE CLOSING \n\n\n")
+      f.close()
+      mixedWorkloadGenCount++
+    }
+      out.println("BP-$(iu.intToString(allSeeds.getLength()))")
+      allSeeds = new List()
+      out.println("AP-$(iu.intToString(allSeeds.getLength()))")
+
+      // insert into String Return Array
+    return 0
+  }
+
+}

@@ -1,0 +1,9 @@
+interface YarnAllocator {
+  bool initialiseYarnAllocator(char setupParams[])
+  void updateTotalExecutorReq(int newTarget)
+  void allocate(int newTarget)
+  void ReleaseExecutor (int ExecRel)
+  int RequestExecutor (char ExecReqRM[])
+  int AllocateExecutor (char ExecAllocAM[])
+  void shutdown()
+}

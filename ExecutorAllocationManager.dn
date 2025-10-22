@@ -1,0 +1,260 @@
+//ExecutorAllocationManager
+//dynamic allocation Data[] Type (name conventions same as spark)
+//data ExecutorAllocationMetric{
+//  int executorsPendingToRemove
+//  dec removeTimes
+//  int executorIds
+//  bool initializing
+//}
+
+//NOTE Spark uses this method within ExecutorAllocationManager
+// A timestamp for each executor of when the executor should be removed, indexed by the ID
+// This is set when an executor is no longer running a task, or when it first registers
+// NOTE this behvaiour has been seperated from EAM and placed within the AM and YA with
+// EAM maintaining a bridge between the two and sending kill requests via invoking "addExecToBeRemoved"
+// and "policy (for executorsToBeRemoved)"
+
+//NOTE: Dynamic Allocation actions (carried out by YA and RM-AMS)
+//Scale Up
+//requests new executors when there are pending tasks, increasing requests result in
+// executors exponentially increasing as startup is slow (expecially in a filled RM queue)
+
+//Scale Down
+//removes executors that have been idle for "executorIdleTimeout" [see Executor.dn] seconds.
+
+
+data removeTimers{
+  int executorId
+  DateTime timeToRemove
+}
+
+data ExecutorInfo{
+  int execId
+}
+
+data removeExecutors{
+  int execId
+}
+
+//NOTE PROCESS
+//AM >> starts scheuduler >> schedler initalises allocation policy >> policy sets up Yarnalloc >> request inital containers
+
+//if dynalloc is available
+// Ya sets up inital continers, AM receives the requests and the policy is removed from YA ... [double the TCP connections for now]
+
+// am informs scheduler of new executors, exec policy is informed we have more executors, ya has request removed (so we can check targets in YA)
+
+// when first batch of executors have arrived and scheduling begins, if executors
+  //if no node has cores available then,
+  //request new executors from Policy
+
+//NOTE Variables used in target calculations
+// min, max, initial, current, old max,
+// initalise will spawn executors initally requesed, for dynamic alloc this is 1-2 for requested this is
+// "--num-executors" and for greedy, this is "nodemanager-count" / max nodes
+
+
+
+component provides ExecutorAllocation requires time.Timer timer, io.Output out, YarnAllocator ya,
+data.adt.List, data.IntUtil iu, data.StringUtil stringUtil, time.DateUtil date, time.Calendar cal, Log
+{
+
+  static Log log = new Log()
+  char compName[] = ""
+
+
+  int amId
+  List executors = new List()
+  List executorsToBeRemoved = new List()
+
+  bool initialExecutorsReceived = true
+
+  //Replaces AddTime within spark Repo ExecuotrallocationManager
+  bool addExecutors = false
+
+  //  The upper bound is based both on a configured property and on the current number of
+  //  running and pending tasks
+  //  TasksPending = TasksRunningorPending / cors per executor [1]
+  int maxNeededExecs
+
+  //diff between old and new target (no diff: numExecutorsToAdd = 1 || diff: numExecutorsToAdd = numExecutorsToAdd*2)
+  int change =0
+
+  //int task counts consisting of pending and running task counts,
+  // determines maxNeededExecs [see getMaxNeededExecutors]
+  int tasksPending =0 //Required from scheudler
+  int tasksRunning =0 //required from scheduler
+
+  //Cset based on taskset size as each core receives a task set
+  int taskPerExectutorCore = 5
+
+  // explonential growth (increases by power2 each iteration)
+  int numExecutorsToAdd = 1
+
+  //Upper and lower execuotr bounds repsectively
+  int minExecutors = 0 // minmimum executors we're allowed to have [0 allows AMs to have a resting state E.g. within streaming apps]
+  int maxExecutors // Hard Limit on execuotrs allowed [Not to be confused with maxNeededExecutors]
+
+  //Start with this number of executors, in event of failure initialNumExecutors
+  //amount of requests will be made on retry
+  int initialNumExecutors = 1
+
+  //number of executors to obtain, if all execs are killed this value is the next request
+  int numExecutorsTarget = initialNumExecutors
+  int oldExecutorTarget
+
+  //Used for confirming minimum and maximum requirements for executor targets
+  //NOTE If used in other components, seperate into their own component
+  int min(int a, int b){
+     if(a <= b){
+      return a
+    }
+    else {
+      return b
+    }
+  }
+
+  int max(int a, int b){
+    if(a >= b){
+      return a
+    }
+    else {
+      return b
+    }
+  }
+
+  //... returns ceil of a & b (totalTasks/ 1)
+  int ceil(int a, int b){
+    //If remainder
+    if((a % b) != 0){
+     return (a / b) + (a % b)
+     //For no remainder integer division will suffice
+    }else{
+     return (a / b)
+    }
+  }
+
+
+  //Informs the requesting AM that Scheduling information is required (i.e. task count/executor count)
+  //Replaces the Scheduler  Cllbacks you wouldhave within a spark implementation of ExecAllocManager
+  //NOTE Currrently only ExecutorAllocationManager requires scheduling data, other implementations cannot request
+  //additional containers and instead serves as an interface to the YA providing container specifications
+  bool ExecutorAllocation:receiveSchedulingData(){
+    return true
+  }
+
+  void ExecutorAllocation:shutdown(){
+    ya.shutdown()
+  }
+
+
+  void ExecutorAllocation:addExecToBeRemoved(int execId){
+    for(ExecutorInfo ei = executors.getFirst(); ei != null; ei = executors.getNext()){
+      if (execId == ei.execId){
+        executorsToBeRemoved.add(new removeExecutors(execId))
+      }
+    }
+  }
+
+  //Simpified implementation, ignroing rounding and parallism ratio [default ratio: 1]
+  int getMaxNeededExecutors(){
+    maxNeededExecs = ceil((tasksPending + tasksRunning), taskPerExectutorCore)
+    out.println("EA-MAX: $(iu.intToString(maxNeededExecs)) Hard limit: $(iu.intToString(maxExecutors))")
+    return maxNeededExecs
+  }
+
+  void updateExecutorTarget(){
+    int maxNeeded = getMaxNeededExecutors()
+    if(initialExecutorsReceived == false){
+      out.println("Waiting for initial Executors")
+    }
+    //Target is greater than required, reduce request and stop sending requests
+    else if(maxNeeded < numExecutorsTarget){
+      oldExecutorTarget = numExecutorsTarget
+      //Target
+      numExecutorsTarget = max(maxNeeded, minExecutors)
+      //reset exponential growth
+      numExecutorsToAdd = 1
+      if(numExecutorsTarget < oldExecutorTarget){
+        ya.updateTotalExecutorReq(numExecutorsTarget)
+      }
+    }
+    else if (addExecutors == true){
+      addExecutors(maxNeeded)
+    }
+  }
+
+  //Function requests additonal executors (via YarnAllocator)
+  void ExecutorAllocation:addExecutors(int maxNeedExec){
+    //Dont request over max limit Executors
+    if (numExecutorsTarget >= maxExecutors){
+      out.println("Executors target is greater than Max allowed executors, cancelling request for more executors")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Executors target is greater than Max allowed executors, cancelling request for more executors ")
+      numExecutorsToAdd = 1
+      //dont need more executor requests
+    }
+    oldExecutorTarget = numExecutorsTarget
+
+    //Make sure target is at least current allocation
+    numExecutorsTarget = max(numExecutorsTarget, executors.getLength())
+
+    //Increase target by executors to add
+    // [increases target resulting in YA sending more requests]
+    numExecutorsTarget += numExecutorsToAdd
+
+    //check target is not greater than maxExecutors set limit
+    numExecutorsTarget = min(numExecutorsTarget, maxNeedExec)
+
+    //Check target is greater than the set minimum boundary minExecutors
+    numExecutorsTarget = max(min(numExecutorsTarget, maxExecutors), minExecutors)
+
+    change = numExecutorsTarget - oldExecutorTarget
+
+    if(change == 0){
+      numExecutorsToAdd = 1
+      //dont need more executor requests
+    }
+
+    //if the above constraints are met and target is different actually make a request
+    ya.updateTotalExecutorReq(numExecutorsTarget)
+    if(change == numExecutorsToAdd){
+      numExecutorsToAdd = numExecutorsToAdd * 2
+    }
+    //If change is different, and therefore no longer increasing at the prevous rate
+    else {
+      numExecutorsToAdd = 1
+    }
+  }//End addExectutors
+
+  // assigns values to variables required for calculating maxNeeded and Targets
+  //Also sets up Yarnallocator and ensures Yarnallocator component Exists
+  bool ExecutorAllocation:initialise(char setupParams[]){
+    //Set global variables to be used for later calculations
+    String setupParamsParsed[] = stringUtil.explode(setupParams, ":")
+    char amIP[] = setupParamsParsed[0].string
+    int amPort = iu.intFromString(setupParamsParsed[1].string)
+    int amid = iu.intFromString(setupParamsParsed[2].string)
+    maxExecutors = iu.intFromString(setupParamsParsed[3].string)
+    compName = "AM-$(iu.intToString(amid))-ExecutorAllocation[EAM]"
+    //Takes executor resource params (core & memory per executor)
+    out.println("[AM-$(iu.intToString(amid))]: Initialised Executor Allocation Policy, Dynamic Allocation selected...")
+    return ya.initialiseYarnAllocator("$(amIP)\\$(iu.intToString(amPort))\\$(iu.intToString(amid))\\$(setupParamsParsed[4].string)\\$(setupParamsParsed[5].string)\\$(setupParamsParsed[6].string)\\$(setupParamsParsed[7].string)")
+  }//End initialise
+
+  int ExecutorAllocation:policy (int tasksTotal){
+//    String reqParams[] = stringUtil.explode(executorRequest, "-")
+    //allows exeutors to be requested
+    addExecutors = true
+
+    // reqParams =  TASKSRUNNING + TASKSPENDING
+    tasksPending = tasksTotal
+    updateExecutorTarget()
+    // remove marked executors if any
+    // set targets
+    // add executors or do not update total
+
+    return 0
+  }//End policy
+
+
+}// End Component

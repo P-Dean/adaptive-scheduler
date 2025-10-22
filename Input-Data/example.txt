@@ -1,0 +1,6 @@
+This is an example text file
+and contains a few lines of 
+example text to let me know if 
+this is actually working right
+its an okay example and it does
+the job I need it to do 

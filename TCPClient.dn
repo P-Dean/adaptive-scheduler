@@ -1,0 +1,76 @@
+const char hostIP[] = /*"127.0.0.1"//*/ "148.88.19.59"
+const int hostPort = 2012
+
+component provides App requires io.Output out, net.TCPSocket, time.Timer time, data.StringUtil stringUtil,io.TextFile{
+
+	void heartbeat(){
+
+		TCPSocket client2 = new TCPSocket()
+
+		if (client2.connect(hostIP, 2021))
+			{
+				while(true){
+			client2.send(new char[]("beat", "\n"))
+			out.println("beat")
+			time.sleep(50)
+		}
+	}
+		else
+		{
+		out.println("Could not connect to host $hostIP")
+		}
+
+	}
+
+
+	int App:main(AppParam params[])
+		{
+		TCPSocket client = new TCPSocket()
+
+		if (params.arrayLength == 0)
+			{
+			out.println("Please enter a message to send!")
+			return 1
+			}
+
+		if(stringUtil.iequal(params[0].string, "wkld")){
+			TextFile f = new TextFile(params[1].string, File.FILE_ACCESS_READ)
+			while(!f.eof())
+			{
+				char line[] = f.readLine()
+				if (client.connect(hostIP, hostPort))
+				{
+					client.send(new char[](line, "\n"))
+					time.sleep(300)
+					client.disconnect()
+				}
+				else
+				{
+					out.println("Could not connect to host $hostIP")
+				}
+				time.sleep(3000)
+			}
+		}
+		else{
+		char req[]
+		for (int i = 0; i < params.arrayLength; i++) {
+			req = new char[](req," ",params[i].string)
+		}
+//		asynch::heartbeat()
+
+		if (client.connect(hostIP, hostPort))
+			{
+			client.send(new char[](req, "\n"))
+			time.sleep(300)
+			client.disconnect()
+			}
+			else
+			{
+			out.println("Could not connect to host $hostIP")
+			}
+
+		}
+
+		return 0
+		}
+	}

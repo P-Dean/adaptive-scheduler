@@ -1,0 +1,10 @@
+data TaskSet{
+    int taskSetId
+    int taskCount
+    int tasksCompleted
+    bool complete
+}
+uses net.TCPSocket
+interface ExecutorThread{
+  TaskSet begin(char s[],int amId,int execId,int threadId)
+}

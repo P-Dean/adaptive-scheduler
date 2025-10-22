@@ -1,0 +1,13 @@
+component provides ConvertArray{
+
+Data[] ConvertArray:convertArrayType(Type t, Data array[])
+  {
+    Data result[] = new Data[array.arrayLength] from t
+
+    for (int i = 0; i < array.arrayLength; i++) {
+      result[i] = array[i]
+    }
+
+    return result
+  }
+}

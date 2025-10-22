@@ -1,0 +1,109 @@
+//YarnRMClient
+// Registers application master to RM / kills AM using RM when complete
+// Setup/create YarnAllocator for given AM (starts dynamicAllocation polciy if linked)
+
+component provides YarnRMClient requires io.Output out, data.StringUtil stringUtil,data.IntUtil iu,JobController, net.TCPSocket, time.Calendar cal, time.DateUtil date, time.Timer timer, Log {
+
+  static Log log = new Log()
+  char compName[] = ""
+
+//Control Flag for whether the AM is allowed to live...
+//NOTE: maybe need to change the use of live and kill in these comments,E.g. run & stop
+//Master Node Socket details {not CONST as they will be subject to change}
+//Received from nodeManager as a parameter for registerAM
+int amId
+char resourceManagerIP[]
+int appMasterServicePort = 2014
+
+  bool sendRequestToRM(char req[])
+  {
+    TCPSocket appMstrServClient = new TCPSocket()
+    out.println("ResourceManager: $resourceManagerIP:$(iu.intToString(appMasterServicePort))")
+    if (appMstrServClient.connect(resourceManagerIP, appMasterServicePort))
+    {
+      appMstrServClient.send(new char[](req, "\n"))
+      char command[]
+      char buf[]
+      int len
+      while ((buf = appMstrServClient.recv(1)).arrayLength > 0 && buf != "\r" && buf != "\n")
+      {
+        command = new char[](command, buf)
+      }
+      if (buf == null || buf != "\r" && buf != "\n")
+      {
+        out.println("Error:[App Master Startup]: Application Master Service disconnected prematurely ($command)")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Error:[App Master Startup]: Application Master Service disconnected prematurely ($command) ")
+        appMstrServClient.disconnect()
+        return false
+      }
+      int success = iu.intFromString(command)
+      else if(success == 1){
+        out.println("Success:[App Master Startup (ID:$(iu.intToString(amId)))] Registered to the Application Master Service \n")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Success:[App Master Startup (ID:$(iu.intToString(amId)))] Registered to the Application Master Service ")
+        appMstrServClient.disconnect()
+        return true
+      }
+      else{
+        out.println("Error:[App Master Startup (ID:$(iu.intToString(amId)))] Registration rejected \n")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Error:[App Master Startup (ID:$(iu.intToString(amId)))] Registration rejected ")
+        appMstrServClient.disconnect()
+        return false
+      }
+    }
+    else
+    {
+      out.println("Error:[App Master Startup (ID:$(iu.intToString(amId)))] Could not connect to Application Master Service using socket ($resourceManagerIP:$(iu.intToString(appMasterServicePort)))")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: ")
+      return false
+    }
+  }
+  //YarnRMClient to register the Spark application’s ApplicationMaster
+  //(using the local hostname, the port 0 and the input uiAddress (WebUI)
+  void YarnRMClient:registerAM(char amRequest[], char socket[], int amID, char rmSocket[],char yasocket[]){
+    resourceManagerIP = rmSocket
+    amId = amID
+    compName = "AM-$(iu.intToString(amId))-YarnRMClient"
+    // Register AM to RM/ assigns AMs existance to AMServices/Liveness - allows allocation/kill from RM
+    out.println("[AM-$(iu.intToString(amID))]Registering to Resource Manager")
+    log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Registering to Resource Manager ")
+    //NOTE Yarn alloctor may be able o complete the registration, instead become a listener or Nm accessable Func
+    //Registers the AM to RM, allowing executor control from RM (I.e. allocate/kill)
+
+    //AM REQUESTS CONTENTS  [seperated using ":"]:
+    //      :2                                                                [AppID] [used for registration]
+    //      :Example-37128311|Workloads/doNotUse/CourseGrainedTest.dn         [AppName|.dn]    [Creates TaskSets; see Workloads Dir]
+    //      :2|2000000                                                        [execCores|execMemory] [AM size]
+    //      :2-2-2000000                                                      [ExecParameters] [executor Quanitity followed by size]
+    //      :Workloads/doNotUse/CourseGrainedTest.dn                          [Inputdata]   [data to be read]
+    //      -127.0.0.1:2143                                                   [amSocket]  [socket to be used by AM and YA(YA port = AM port+1)
+
+    String amParsedRequest[] = stringUtil.explode(amRequest, ":")
+    String amAppName[] = stringUtil.explode(amParsedRequest[1].string, "|")
+    String socketParse[] = stringUtil.explode(socket, ":")
+
+    bool registeredAM = false
+    while(registeredAM == false)
+    {
+      // IRegister to the Resoutce Manager, this will allow executor requests to be processed and the AM to start
+      // (ExecParams, applicationmaster socket, amID [unique identifier per nodemanager])
+      registeredAM = sendRequestToRM(new char[]("r:",amAppName[0].string,"\\",socketParse[0].string,"\\",socketParse[1].string,"\\",iu.intToString(amID)))
+    }
+    //    for (int i = 0; i < amParsedRequest.arrayLength; i++) {
+    //      out.println("AMPR[$(iu.intToString(i))]: $(amParsedRequest[i].string)")
+    //    }
+    //    for (int i = 0; i < amAppName.arrayLength; i++) {
+    //      out.println("AMPR[$(iu.intToString(i))]: $(amAppName[i].string)")
+    //    }
+    if(registeredAM != false){
+      JobController am = new JobController()
+      am.ApplicationMaster(amRequest, socket,amID, yasocket,resourceManagerIP)
+      registeredAM = false
+    }
+    sendRequestToRM(new char[]("d:",amAppName[0].string,"\\",socketParse[0].string,"\\",socketParse[1].string,"\\",iu.intToString(amID)))
+    out.println("YARN-RM:EXITED APPLICATION MASTER")
+    log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Application Master closed, closing YarRMClient ")
+    //IF Am is no longer registered, the AM Unregisters from the RM and dies, releasing reserved resources back to NM
+    //TODO Deregister AM
+  }//End registerAM
+
+}

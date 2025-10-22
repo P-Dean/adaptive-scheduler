@@ -1,0 +1,418 @@
+/*******************************
+* Node Manager responsible for *
+* local allocation of tasks to *
+* AM and updates to RM*        *
+*******************************/
+//NOTE: Yet to be tested within a distributed environment
+//NOTE: Uses Global Variable List ResAlloc
+
+//TODO: Alter AM request/receive container requests (launchExecutor)
+//TODO: EDIT Executor launch
+
+//Used to queue container requests
+data containerRequests{
+  char appId[]
+  char containerType[]
+  int threadsReq
+  int memoryReq
+}
+
+//Used to calculate the current resource usage
+data ResourcesAllocated {
+  char appId[]
+  int threadsAllocated
+  int memoryAllocated
+}
+
+data containerRunning{
+  int containerId
+  char appId[]
+}
+
+data amPortPool{
+  int port
+  bool leased
+  char lessee[]
+  int lastChecked
+}
+
+component provides App requires os.SystemInfo sysInfo, io.Output out, data.IntUtil iu , net.TCPSocket,
+net.TCPServerSocket, net.UDPClient udp,  time.Timer time, data.adt.List, io.TextFile,time.Calendar cal, time.DateUtil date,
+data.StringUtil stringUtil, Worker exec, JobController AppMstr, YarnRMClient yrmc,Log {
+
+  static Log log = new Log()
+  char compName[] = "NodeManager"
+
+  //TCP connect count
+  static int tcpCounter = 0
+
+  //char hostname[]
+  char nodeIP[]
+
+  //ResourceManager
+  char resourceManagerIP[]
+
+  int totalThreads
+  int totalMemory
+
+  int usedMemory = 0
+  int usedThreads = 0
+
+  int containerID = 0
+
+  //RsAlloc is a list of allcontainers using resources, total = resources used
+  static List ResAlloc = new List()
+  List containerAlloc = new List()
+
+  //portPool caontains ports avalable to ApplicationMasters and Executor Containers
+  static List portPool = new List()
+
+  Mutex handlerLock = new Mutex()
+
+  void streamHandler(TCPSocket s){
+    mutex(handlerLock){
+  //  mutex(handlerLock){
+    char command[]
+    char buf[]
+    int len
+    char resourceUpdate[]
+    while ((buf = s.recv(1)).arrayLength > 0 && buf != "\r" && buf != "\n")
+    {
+      command = new char[](command, buf)
+    }
+    if (buf != "\r" && buf != "\n")
+    {
+      out.println("Error: Failed to recieve command")
+      s.disconnect()
+      tcpCounter = tcpCounter - 1
+      return
+    }
+    out.println("Received: $command")
+    log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Received: $command ")
+    String ops[] = stringUtil.explode(command, ":")
+
+    NetworkEndpoint nep = s.getRemoteEndpoint()
+    out.println("$(nep.address)::$(iu.intToString(nep.port))")
+
+//    for(amPortPool amPrt = portPool.getFirst(); amPrt != null; amPrt = portPool.getNext()) {
+ //     out.println("[][][]PORT LEASE: $(iu.intToString(amPrt.port)):$(amPrt.lessee)")
+  //  }
+    //realeases resources back to NodeManager
+    if(stringUtil.iequal(ops[0].string,"reqPort")){
+      int newPort = portRequest(ops[1].string)
+      s.send(new char[]("$(iu.intToString(newPort))","\n"))
+      out.println("[NM Sending]$(iu.intToString(newPort))")
+      s.disconnect()
+      tcpCounter = tcpCounter - 1
+    }
+
+    else if(stringUtil.iequal(ops[0].string,"release")){
+      int releaseCounter = 0
+      //Release port reservations, used for AM,YA and EXECsockets
+      for(amPortPool amPrt = portPool.getFirst(); amPrt != null; amPrt = portPool.getNext()) {
+        if(stringUtil.iequal(amPrt.lessee,ops[1].string) && amPrt.leased == true){
+          amPrt.leased = false
+          amPrt.lessee = ""
+          amPrt.lastChecked = date.toMilliseconds(cal.getTime())
+        }
+      }
+
+      //Release allocated cores and memory
+      out.println("****RELEASE START $(iu.intToString(ResAlloc.getLength())) ")
+       for(ResourcesAllocated ra = ResAlloc.getFirst(); ra != null; ra = ResAlloc.getNext()){
+	        out.println("RA Comparing:  $(ra.appId),$(ops[1].string)")
+          if(stringUtil.iequal(ra.appId,ops[1].string)){
+            ResAlloc.remove(ra)
+            releaseCounter++
+          }
+        }
+      out.println("**** Released $(iu.intToString(releaseCounter)) containers for App $(ops[1].string)")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Released $(iu.intToString(releaseCounter)) containers for App $(ops[1].string) ")
+      out.println("****RELEASE END $(iu.intToString(ResAlloc.getLength()))")
+      for(ResourcesAllocated ra = ResAlloc.getFirst(); ra != null; ra = ResAlloc.getNext()){
+        out.println("RA-Contents:$(ra.appId)")
+      }
+      //
+      s.disconnect()
+      tcpCounter = tcpCounter - 1
+    }
+
+    //Reserves resources for an incoming executor
+    else if (stringUtil.iequal(ops[0].string,"reserve"))
+    {
+      String reservation[] = stringUtil.explode(ops[2].string, "|")
+    //  ResAlloc.add(new ResourcesAllocated(ops[1].string,iu.intFromString(reservation[0].string),iu.intFromString(reservation[1].string)))
+      if(usedThreads+iu.intFromString(reservation[0].string) <= totalThreads && usedMemory+iu.intFromString(reservation[1].string) <= totalMemory)
+      {
+        ResAlloc.add(new ResourcesAllocated(ops[1].string,iu.intFromString(reservation[0].string),iu.intFromString(reservation[1].string)))
+        out.println("**RESERVATION MADE FOR APP $(ops[1].string), $(reservation[0].string) cores & $(reservation[1].string) memory")
+        resourceUpdate = "$(nodeIP):$(iu.intToString(totalThreads-usedThreads))-$(iu.intToString(totalMemory-usedMemory))"
+        s.send(new char[]("1\\",resourceUpdate,"\n"))
+        s.disconnect()
+        tcpCounter = tcpCounter - 1
+        out.println("**Reserving Executor for App-$(ops[1].string): Success")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Reserving Executor for App-$(ops[1].string): Success")
+      }
+      else
+      {
+        resourceUpdate = "$(nodeIP):$(iu.intToString(totalThreads-usedThreads))-$(iu.intToString(totalMemory-usedMemory))"
+        s.send(new char[]("0\\",resourceUpdate,"\n"))
+        s.disconnect()
+        tcpCounter = tcpCounter - 1
+        out.println("**Reserving Executor for App-$(ops[1].string):[Update: $(resourceUpdate)] Failed || $(iu.intToString(usedThreads+iu.intFromString(reservation[0].string))) _ $(iu.intToString(totalThreads)) : $(iu.intToString(usedMemory+iu.intFromString(reservation[1].string))) _ $(iu.intToString(totalMemory))")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Reserving Executor for App-$(ops[1].string):[Update: $(resourceUpdate)] Failed || $(iu.intToString(usedThreads+iu.intFromString(reservation[0].string))) _ $(iu.intToString(totalThreads)) : $(iu.intToString(usedMemory+iu.intFromString(reservation[1].string))) _ $(iu.intToString(totalMemory)) ")
+	      return
+      }
+    }
+
+    //NOTE Executor laucnh disconnect
+    //launches an executor
+    else if(stringUtil.iequal(ops[0].string,"exec")){
+      StartExec(ops[1].string)
+      s.disconnect()
+      tcpCounter = tcpCounter - 1
+    }
+
+    //Exectuors laucnh through the above, low level resource reservatons may be made, with exec requests diverted to nodemanager
+    //changes to application escalation ??
+    
+
+    //Researves resources and launches application master
+    else{
+    String resReq[] = stringUtil.explode(ops[2].string, "|")
+    //ResAlloc.add(new ResourcesAllocated(ops[0].string,iu.intFromString(resReq[0].string),iu.intFromString(resReq[1].string)))
+    //out.println("$(ops[1].string,iu.intFromString(resReq[0].string)),$(iu.intFromString(resReq[1].string))")
+      if(usedThreads+iu.intFromString(resReq[0].string) <= totalThreads && usedMemory+iu.intFromString(resReq[1].string) <= totalMemory)
+      {
+        ResAlloc.add(new ResourcesAllocated(ops[0].string,iu.intFromString(resReq[0].string),iu.intFromString(resReq[1].string)))
+        resourceUpdate = "$(nodeIP):$(iu.intToString(totalThreads-usedThreads))-$(iu.intToString(totalMemory-usedMemory))"
+        s.send(new char[]("1\\",resourceUpdate,"\n"))
+        s.disconnect()
+        tcpCounter = tcpCounter - 1
+        out.println("**Reserving Application Master for App-$(ops[1].string): Success")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Reserving Application Master for App-$(ops[1].string): Success ")
+      }
+      else
+      {
+        resourceUpdate = "$(nodeIP):$(iu.intToString(totalThreads-usedThreads))-$(iu.intToString(totalMemory-usedMemory))"
+        s.send(new char[]("0\\",resourceUpdate,"\n"))
+        s.disconnect()
+        tcpCounter = tcpCounter - 1
+        out.println("**Reserving Application Master for App-$(ops[1].string): [Update: $(resourceUpdate)] Failed -- Failed ||  UsedThread:$(iu.intToString(usedThreads)) - AppThread: $(resReq[0].string) - TotalThread:$(iu.intToString(totalThreads)) : UsedMem:$(iu.intToString(usedMemory)) - AppMem: $(resReq[1].string) - TotalMem: $(iu.intToString(totalMemory))")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Reserving Application Master for App-$(ops[1].string): [Update: $(resourceUpdate)] Failed -- Failed ||  UsedThread:$(iu.intToString(usedThreads)) - AppThread: $(resReq[0].string) - TotalThread:$(iu.intToString(totalThreads)) : UsedMem:$(iu.intToString(usedMemory)) - AppMem: $(resReq[1].string) - TotalMem: $(iu.intToString(totalMemory)) ")
+	      return
+      }
+
+    //Port availavle for current AM/Exec launch request
+    int leasedPort
+    int yaPort
+    for(amPortPool amPrt = portPool.getFirst(); amPrt != null; amPrt = portPool.getNext()) {
+      if(amPrt.leased == false){
+        leasedPort = amPrt.port
+        amPrt.leased = true
+        amPrt.lessee = ops[0].string
+        break
+      }
+    }
+    for(amPortPool amPrt = portPool.getFirst(); amPrt != null; amPrt = portPool.getNext()) {
+      if(amPrt.leased == false){
+        yaPort = amPrt.port
+        amPrt.leased = true
+        amPrt.lessee = ops[0].string
+        break
+      }
+//    }
+    }
+    //Complete Scoket to be given to am/Exec
+    char amSocket[] = new char[](nodeIP,":",iu.intToString(leasedPort))
+    char masterSocket[] = resourceManagerIP
+    char yaSocket[] = new char[](nodeIP,":",iu.intToString(yaPort))
+    out.println("[NM-AM-Socket]: $(amSocket)")
+    out.println("[NM-YA-Socket]: $(yaSocket)")
+    containerID++
+    out.println("Launching Application Master...")
+    String amID[] = stringUtil.explode(command, ":")
+//  YarnRMClient yrmc = new YarnRMClient()
+    asynch::startYarnResourceManagerClient(command, amSocket,iu.intFromString(amID[0].string), masterSocket,yaSocket)
+
+    containerAlloc.add(new containerRunning(containerID,ops[1].string))
+   // NetworkEndpoint ne = s.getRemoteEndpoint()
+   // out.println("client address: $(ne.address):$(iu.intToString(ne.port))")
+    out.println("$(command) - $(amSocket) - $(iu.intToString(containerID))")
+    log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Launching AM: $(command) - $(amSocket) - $(iu.intToString(containerID))")
+    //for(int i = 0; i < ops.arrayLength; i++)
+    //  out.println("$(ops[i].string)")
+    //}
+    }
+  }
+}
+
+void startYarnResourceManagerClient(char command[], char amSocket[], int amID, char masterSocket[], char yaSocket[]){
+	yrmc.registerAM(command, amSocket,amID, masterSocket,yaSocket)
+}
+
+Mutex portSearch = new Mutex()
+int portRequest(char container[]){
+  out.println("[NM]: Searching for oldPort and remvoing lease")
+  mutex(portSearch)
+  {
+    String pp[] = stringUtil.explode(container,"-")
+    for(amPortPool amPrt = portPool.getFirst(); amPrt != null; amPrt = portPool.getNext()) {
+      if(amPrt.port == iu.intFromString(pp[1].string)){
+        amPrt.leased = false
+        amPrt.lessee = null
+        amPrt.lastChecked = date.toMilliseconds(cal.getTime())
+        out.println("[NM]: Found oldPort")
+
+      }
+    }
+    out.println("[NM]: Searching for new port")
+    for(amPortPool amPrt = portPool.getFirst(); amPrt != null; amPrt = portPool.getNext()) {
+      if(!amPrt.leased && amPrt.lastChecked+300000 <= date.toMilliseconds(cal.getTime())){
+        amPrt.leased = true
+        amPrt.lessee = pp[0].string
+        out.println("[NM]: found new port [$(iu.intToString(amPrt.port))]")
+        return amPrt.port
+      }
+    }
+    out.println("[NM]: No Available Port found")
+    return iu.intFromString(pp[1].string)
+  }
+}
+
+
+  void StartExec(char execParams[]){
+    out.println("[NM]: Launching Executor")
+  //  out.println("[NM]:$execParams")
+    int execPort
+    String execParse[] = stringUtil.explode(execParams, "-")
+    String execValues[] = stringUtil.explode(execParse[0].string, "\\")
+    String amSocket[] = stringUtil.explode(execParse[1].string, "\\")
+
+    for(ResourcesAllocated ra = ResAlloc.getFirst(); ra != null; ra = ResAlloc.getNext()){
+      if(stringUtil.iequal(ra.appId, execValues[0].string) && ra.threadsAllocated == iu.intFromString(execValues[2].string) && ra.memoryAllocated == iu.intFromString(execValues[3].string)){
+        ra.appId = new char[](execValues[0].string,execValues[4].string)
+      }
+    }
+
+    while(execPort == 0){
+    for(amPortPool amPrt = portPool.getFirst(); amPrt != null; amPrt = portPool.getNext()) {
+      if(amPrt.leased == false){
+        execPort = amPrt.port
+        amPrt.leased = true
+        amPrt.lessee = new char[](execValues[0].string,execValues[4].string)
+        break
+      }
+    }
+  }
+//    out.println("[nm]:$nodeIP:$(iu.intToString(execPort))")
+  //  1\ 127.0.0.1 \ 2 \ 2000000 \ 2 - 127.0.0.1\2143
+    //int execId, char execIP[], int execPort, int totalCores, int totalMemory, char amIp[], int amPort
+    Worker newExec = new Worker()
+    //asynch::newExec.executor(iu.intFromString(execValues[4].string), execValues[1].string, execPort, iu.intFromString(execValues[2].string), iu.intFromString(execValues[3].string), amSocket[0].string, iu.intFromString(amSocket[1].string), iu.intFromString(execValues[0].string))
+	asynch::startExecutor(newExec ,iu.intFromString(execValues[4].string), execValues[1].string, execPort, iu.intFromString(execValues[2].string), iu.intFromString(execValues[3].string), amSocket[0].string, iu.intFromString(amSocket[1].string), iu.intFromString(execValues[0].string))
+  }
+  void startExecutor(Worker toDeploy, int id, char ip[], int port, int cores, int memory, char amIp[], int amPort, int feedbackPort){
+	toDeploy.executor(id, ip, port, cores, memory, amIp, amPort, feedbackPort)
+  }
+  //NodeManager Heartbeats [keep alive for nodemanagers]
+  void heartbeat (){
+    while(true){
+      usedMemory = 0
+      usedThreads = 0
+      char resourceUpdate []
+      if(ResAlloc.getLength() < 1){
+        resourceUpdate = "$(iu.intToString(totalThreads))-$(iu.intToString(totalMemory))"
+        //out.println("Heartbeat[No running Apps]:$(resourceUpdate)")
+      }
+      else {
+        for(ResourcesAllocated ra = ResAlloc.getFirst(); ra != null; ra = ResAlloc.getNext()) {
+          usedMemory+=ra.memoryAllocated
+          usedThreads+=ra.threadsAllocated
+        }
+        int freeThreads = totalThreads-usedThreads
+        int freeMemory = totalMemory-usedMemory
+        resourceUpdate = "$(iu.intToString(freeThreads))-$(iu.intToString(freeMemory))"
+//        out.println("Heartbeat[$(iu.intToString(ResAlloc.getLength()))-Running Apps]:$(resourceUpdate)")
+      }
+      char address[] = resourceManagerIP
+      byte datagram[] = "$(nodeIP):$(resourceUpdate)"
+      udp.send(address,2021,datagram)
+      time.sleep(5000)
+    }
+  }
+
+  int App:main(AppParam params[]){
+    //TODO:RM Communication (collect and update status/state)
+    //\f/HOSTNAME = params[0].string
+    int availableMemory
+    int availableCores
+    // Global int totalThreads && totalMemory, with a subtracted fixed resource
+    // allocation of 1 thread and 1Gb of memory for non-scheduler processes (E.g. OS)
+
+    TextFile tf = new TextFile("master.txt", File.FILE_ACCESS_READ)
+		while(!tf.eof()) {
+			char line[] = tf.readLine()
+      resourceManagerIP = line
+		}
+
+    totalThreads = sysInfo.getCoreCount() - 1
+    //totalMemory = hi.getmemory() - 1048576
+    int mb = sysInfo.getMemorySize() * 1024
+    totalMemory = mb - 1048576
+    bool resourceManagerConnect = false
+    //Take ports 2142-2182 for node manager processes
+    for (int i = 0; i < 80; i++) {
+      portPool.add(new amPortPool(2142+i,false))
+    }
+    for(amPortPool amPrt = portPool.getFirst(); amPrt != null; amPrt = portPool.getNext()) {
+      out.println("$(iu.intToString(amPrt.port))")
+    }
+
+    while(resourceManagerConnect == false){
+      out.println("Registering NodeManager to ResourceManager...")
+      TCPSocket client = new TCPSocket()
+
+      if (client.connect(resourceManagerIP, 2012))
+      {
+        tcpCounter = tcpCounter + 1
+        nodeIP = client.getLocalEndpoint().address
+        resourceManagerConnect = true
+        //Sends request of type "register" + total Cores+Memory to RM
+        //Allowing RM to know resources avialble and schedule for the NM
+        client.send(new char[]("register\\","$(iu.intToString(totalThreads)):$(iu.intToString(totalMemory))", "\n"))
+        client.disconnect()
+        tcpCounter = tcpCounter - 1
+        out.println("Registered the following avaialable resources: \nTotal Thread Count: $(iu.intToString(totalThreads))\nTotal Memory Available: $(iu.intToString(totalMemory))")
+      }
+      else
+      {
+        out.println("Could not connect to ResourceManager")
+        out.println("Retrying in 3 seconds...")
+        time.sleep(3000)
+      }
+      log.logStartup(compName,nodeIP)
+    }
+    out.println("Beginning Heartbeat client")
+    log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Beginning heartbeat client")
+    asynch::heartbeat()
+    //time.sleep(3000)
+    //ResAlloc.add(new ResourcesAllocated(0002,2,4000000))
+    //time.sleep(6000)
+    //ResAlloc.remove(ResAlloc.getFirst())
+    //out.println("update applied")
+    //Port-2033: Worker TaskSet submission (set from master to Worker)
+
+    TCPServerSocket nmTaskSetRecv = new TCPServerSocket()
+    nmTaskSetRecv.bind(nodeIP, 2033)
+    while(true){
+      TCPSocket nmMaster = new TCPSocket()
+      if(nmMaster.accept(nmTaskSetRecv)){
+        tcpCounter = tcpCounter + 1
+        asynch::streamHandler(nmMaster)
+        }
+      //TODO: Add ResourceManager Reconnect
+    }
+    return 0
+  }
+}

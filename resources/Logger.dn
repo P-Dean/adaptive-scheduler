@@ -1,0 +1,7 @@
+interface Logger {
+  void collectRmHstry()
+  void recvLogEntry()
+  bool logApp()
+  bool logError()
+  bool logInfo()
+}

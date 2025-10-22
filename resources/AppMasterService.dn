@@ -1,0 +1,13 @@
+uses Scheduling
+
+interface AppMasterService{
+//  void receiveAllocation(int applicationId ,char nodeMngrID[],int coresReq,int memReq)
+  bool registerAppMaster(char amInfo[])
+  void beginAppMstrServ()
+  void submitAllocation(char execRequest[])
+  void clearAMS()
+  void addAllocation(int applicationId ,char nodeMngrID[],int coresReq,int memReq)
+  char[] receiveAllocation(int applicationId ,char nodeMngrID[],int coresReq,int memReq)
+  
+  void setScheduler(store Scheduling scheduler)
+}

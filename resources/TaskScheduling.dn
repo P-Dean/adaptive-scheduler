@@ -1,0 +1,42 @@
+
+//Queue for created tasks currently held within the AM
+data LaunchingTasks{
+  int taskSetId
+  char taskSetExecutable[]
+  char taskSetData[]
+  int setNo
+}
+
+//Tasks currently exeuting or completed within an executor
+//NOTE:(A limit could be set to 20, history server required for a set max on entry limit)
+data RunningTasks{
+  int taskSetId
+  //char chunk[]
+  int setNo
+  int executorId
+  int timeRunning
+  bool completed // used in final check, if all complete then executors are destroyed
+}
+
+data ExecutorsRegistered{
+  int execId
+  int availableCores
+  int availableMemory
+  char execIP[]
+  int execPort
+  int timeIdle // if there are no running jobs on executor this timer is activated [serves as a marker [DateTimeMilliseconds] and is set to  0 if not idle]
+  bool clean
+}
+
+uses data.adt.List
+
+interface TaskScheduling{
+  void shutdown()
+  bool submitTaskSet(int taskSetId, char executable[], char inputdata[], int setno)
+  void ScheduleTaskSet(char executor[])
+  void removeExecutor(int execId)
+  bool initialiseValues(int amPort,int amID,int maxExecs, char execParams[], char amAppName[], int elPort,char elIP[], char resourceMasterIP[])
+  void requestExecutor(char requestContainer[])
+  void addExecutorProperties(int execId, int cores, int mem, char execIP[], int execPort, int timeIdle)
+  int removeFromRunning(int taskSetId)
+}

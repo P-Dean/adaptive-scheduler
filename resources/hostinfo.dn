@@ -1,0 +1,9 @@
+interface hostinfo {
+
+int getcores ()
+
+int getmemory ()
+
+int getglobalmemory ()
+
+}

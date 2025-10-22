@@ -1,0 +1,8 @@
+interface ExecutorAllocation{
+  bool receiveSchedulingData()
+  bool initialise(char setupParams[])
+  int policy (int tasks)
+  void addExecToBeRemoved(int execId)
+  void addExecutors(int maxNeedExec)
+  void shutdown()
+}

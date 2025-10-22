@@ -1,0 +1,314 @@
+//TaskFIFO
+
+component provides TaskScheduling requires ExecutorAllocation ea, data.adt.List, time.Calendar cal, time.DateUtil date, time.Timer timer,
+io.Output out, data.StringUtil stringUtil, data.IntUtil iu, net.TCPSocket, Log{
+
+  static Log log = new Log()
+  char compName[] = ""
+
+
+  List taskQueue = new List()
+  List runningTasks = new List()
+  List executors = new List()
+
+  //Unique identifier for Application Master on current NodeManager
+  int amId = 0 // 0 indivates te scheduler has no amId given from an running AM
+  char amIP[]
+  //Fla for whether the scheduler needs t check for pending tasks and periodcally update EA
+  bool sendSchedulingData
+  int pendingTaskCount // Change in this count indicates needs [therefore target Executors] have changed
+
+  //Scheduling counters
+  int taskSetTotal
+  int stageTotal
+
+  int maximumexecutors = 0
+  /*
+  ############################################################
+  EXECUTOR REQUESTS FOR YarnAllocator [& AllocationPolicy]
+  ############################################################
+
+  */
+  void TaskScheduling:removeExecutor(int execId){
+
+  }
+
+  //data ExecutorsRegistered  //  int execID  //  int coresAvailable  //  int memoryAvailable //  int timeIdle
+  void TaskScheduling:shutdown(){
+    //    for(ExecutorsReady er = executors.getFirst(); er != null; er = executors.getNext()){
+    //      if(execId == er.execID){
+    //        executors.remove(er)
+    //  ya.ReleaseExecutor(execId)
+    //      }
+    //  }
+
+    //Unbind Yarn Allocators socket,, releasing port
+    ea.shutdown()
+
+    //Release Executors
+    for(ExecutorsRegistered er = executors.getFirst(); er != null; er = executors.getNext()) {
+      TCPSocket shutdownExecutor = new TCPSocket()
+      //TODO:Replace with read file containing:MASTER IPv4 ADDRESS
+      out.println("Starting Shutdown for Executor: $(er.execIP):$(iu.intToString(er.execPort))")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Starting Shutdown for Executor: $(er.execIP):$(iu.intToString(er.execPort)) ")
+      if (shutdownExecutor.connect(er.execIP, er.execPort))
+      {
+        shutdownExecutor.send("26678268266753;$(iu.intToString(0))\n")
+        shutdownExecutor.disconnect()
+      }
+      else
+      {
+        out.println("Failed to shutdown Executor")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR: Failed to shutdown Executor")
+        }//End else TCP send to NM
+
+      }
+
+      //ApplicationMaster Releases its reservied resources on NM
+      TCPSocket releaseResources = new TCPSocket()
+      if (releaseResources.connect(amIP, 2033))
+      {
+        releaseResources.send("release:$(iu.intToString(amId))\n")
+        releaseResources.disconnect()
+      }
+      else
+      {
+        out.println("-----------ERROR: Failed to release resources")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR: Failed to release resources ")
+        }//End else TCP send to NM
+      }
+
+      //Inisilise values for YA - privides lower and upper boudnareis
+      bool TaskScheduling:initialiseValues(int amPort,int amID, int maxExecs, char execParams[], char amAppName[], int elPort,char elIP[],char resourceMasterIP[]){
+        amId = amID
+        amIP = elIP
+        compName = "AM-$(iu.intToString(amId))-TaskFIFO"
+        maximumexecutors = maxExecs
+//        out.println("[AM-$(iu.intToString(amId))]: Initialising Scheduler FIFO...")
+//        out.println("[AM-$(iu.intToString(amId)) FIFO]: $(amIP):$(iu.intToString(amPort)):$(iu.intToString(amId)):$(iu.intToString(maxExecs))")
+        //    out.println("[AM-$(iu.intToString(amId)) FIFO]: $execParams")
+        //    out.println("[AM-$(iu.intToString(amId)) FIFO]: $amAppName")
+        return ea.initialise("$(amIP):$(iu.intToString(amPort)):$(iu.intToString(amId)):$(iu.intToString(maxExecs)):$(execParams):$(amAppName):$(iu.intToString(elPort)):$(resourceMasterIP)")
+        //    String setupParsed[] = stringUtil.explode(setup, ":")
+        // Set amId
+        //    amId = iu.intFromString(setupParsed[0])
+
+        // check if scheduling data is to be sent [see ScheduleTaskSet]
+        //    sendSchedulingData = ea.receiveSchedulingData()
+        // initialise ExecutorAllocation
+        //    ea.initialise(setup)
+      }
+
+      void TaskScheduling:requestExecutor(char requestContainer[]){
+        //Requests a starting single executor
+        ea.policy(1)
+      }
+
+      void TaskScheduling:addExecutorProperties(int execId, int cores, int mem, char execIP[], int execPort, int timeIdle){
+        /*
+        data ExecutorsRegistered{
+        int execId
+        int availableCores
+        int availableMemory
+        char execIP[]
+        int execPort
+        int timeIdle // if there are no running jobs on executor this timer is activated [serves as a marker [DateTimeMilliseconds] and is set to  0 if not idle]
+        }*/
+        //  String execReg[] = stringUtil.explode(executorInfo, ":")
+        //out.println("REG: Executor  $(iu.intFromString(execReg[0].string)): registered to Application Manager, ready for scheduling")
+        //Adds Executor to executors (executorId, execID // coresAvailable // memoryAvailable // timeIdle
+        executors.add(new ExecutorsRegistered(execId,cores,mem,execIP,execPort,timeIdle,true) )
+        out.println("TaskScheduler-FIFO: Adding Executor $(iu.intToString(execId))")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Adding Executor $(iu.intToString(execId)) ")
+      }
+
+      bool TaskScheduling:submitTaskSet(int taskSetId,char executableName[],char inputDataName[],int setNo){
+        //Entry Example:   //int taskSetId //char taskSetExecutable // char taskSetData  //int setNo
+        taskQueue.add(new LaunchingTasks(taskSetId,executableName,inputDataName,setNo))
+        //TODO Check if required
+        //requestExecutor(executableName)
+        return true
+      }
+
+      int TaskScheduling:removeFromRunning(int taskSetId){
+        for(RunningTasks rt = runningTasks.getFirst(); rt != null; rt = runningTasks.getNext()){
+          if(taskSetId == rt.taskSetId){
+            runningTasks.remove(rt)
+            return 0
+          }
+        }
+        return 1
+      }
+      int execFullCount = 0
+      void TaskScheduling:ScheduleTaskSet(char execUpdate[]){
+//        out.println("[AM-$(iu.intToString(amId))]: $execUpdate")
+
+        ExecutorsRegistered e
+
+
+//        out.println("[Task-Scheduling: FIFO]")
+        if(taskQueue.getLength() == 0){
+          //resets the counter used to invoke a request for a new exectutor
+          execFullCount = 0
+        }
+//        out.println("**** ExecFullCount: $(iu.intToString(execFullCount))")
+        //invokes the calculation of/passing(dependent on ea component) the value of the number of new executors to be requested
+        //if: All executors are full and this application master is allowed to request more
+        if(execFullCount == executors.getLength() && executors.getLength() < maximumexecutors){
+          out.println("************** Requesting additional executors")
+          log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Requesting additional executors")
+          ea.policy(taskQueue.getLength()+runningTasks.getLength())
+          execFullCount = 0
+        }
+        /*
+        ##############################################
+        [UE] UPDATING EXECUTOR RESOURCE INFORMATION
+        ##############################################
+        */
+        String update[] = stringUtil.explode(execUpdate,":")
+        String resUpdate[] = stringUtil.explode(update[1].string,"-")
+        //out.println("Executor-Heartbeat:$(update[0].string)")
+
+//        out.println("Executors currently registered:")
+        for(ExecutorsRegistered er = executors.getFirst(); er != null; er = executors.getNext()) {
+//          out.println("Executor-ID: $(iu.intToString(er.execId))")
+        }
+
+          for(ExecutorsRegistered er = executors.getFirst(); er != null; er = executors.getNext()) {
+            //  out.println("EXECUTORS-AVAILABLE:$(iu.intToString(executors.getLength()))")
+            //  out.println("$(update[0].string)")
+
+            if (er.execId == iu.intFromString(update[0].string)){
+              er.clean = true
+              if(stringUtil.iequal(resUpdate[0].string,"x")){
+  //              out.println("Executor-[$(iu.intFromString(update[0].string))]: Alive heartbeat recieved")
+                e = er
+                break
+              }
+              else{
+                //out.println("EXECUTOR-FOUND WITH: $(resUpdate[0].string)")
+                er.availableCores = iu.intFromString(resUpdate[0].string)
+                er.availableMemory = iu.intFromString(resUpdate[1].string)
+                e = er
+                break
+              }
+            }
+          }
+
+        //  if(submittedApps.arrayLength >= 1){
+        //    out.println("ENTERED: App Submit > 1  [$(iu.intToString(submittedApps.arrayLength))]")
+        //    for (RunningApplication ra = submittedApps.getFirst(); ra != null; ra = workers.getNext()) {
+        //      out.println("$(iu.intToString(ra.appId))")
+        //    }
+        //  }
+
+//NOTE: UE [all above until end ExecFull] could be moved into the application master and invoke an update of current record
+//      OR the scheudler recevices the executors current resources with the invokation of current func
+/*
+##############################################
+SCHEDULING TASK
+##############################################
+*/
+//        out.println("Task-Sets to be scheduled:$(iu.intToString(taskQueue.getLength()))")
+//        out.println("Task-Sets scheduled:")
+if(e.clean){
+for(RunningTasks rt = runningTasks.getFirst(); rt != null; rt = runningTasks.getNext()){
+  //          out.println("[Task-Set ID]:$(iu.intToString(rt.taskSetId)) [Scheduled to Exec]:$(iu.intToString(rt.executorId))")
+}
+for(LaunchingTasks ts = taskQueue.getFirst(); ts != null; ts = taskQueue.getNext()) {
+  //Deploy container request
+  //          out.println("Entered Launch Task-Set")
+
+  int core = 1
+  if(core <= e.availableCores ){
+    //            out.println("TASK-SCHED-CORES COMPAR: $(iu.intToString(core)):$(iu.intToString(e.availableCores))")
+    //workers.update(n,(new NodeManager(n.nmID,n.availableCores-job.coresRequired,n.availableMemory-job.memoryRequired)))
+    e.availableCores = e.availableCores - 1
+
+
+    TCPSocket client = new TCPSocket()
+    //TODO:Replace with read file containing:MASTER IPv4 ADDRESS
+    //          out.println("TASK-SCHED-SOCKET: $(e.execIP):$(iu.intToString(e.execPort))")
+    ///add paam array to asswmbly
+    //add array to launch main app params for config
+    if (client.connect(e.execIP, e.execPort))
+    {
+      //Resets the counter used to invoke a request for more executors
+      //As a task has been scheduled we have available resources again, more may shortly become available
+      execFullCount=0
+      //iu.intToString(job.appId)):$(job.applicationName.string)|$(job.applicationData.string):$(iu.intToString(job.coresRequired))|$(iu.intToString(job.memoryRequired)):$(job.executorParameters):$(job.appFileDir.string) \n"
+      //NOTE: starting int is used in ExecutorThreadHandler.streamhandler()
+      //int = Constantanople [see workloadGenerator]
+      client.send("26678268266753;$(iu.intToString(ts.taskSetId)):$(ts.taskSetExecutable):$(ts.taskSetData):$(iu.intToString(ts.setNo))\n")
+      //            out.println("TASK SET $(iu.intToString(ts.taskSetId)) SENT TO: $(e.execIP):$(iu.intToString(e.execPort))")
+
+      //  out.println("RESOURCEMANAGER-TEST: $(iu.intToString(job.appId)):$(job.applicationName.string)|$(job.applicationData.string):$(iu.intToString(job.coresRequired))|$(iu.intToString(job.memoryRequired)):$(job.executorParameters):$(job.appFileDir.string) \n")
+      char command[]
+      char buf[]
+      int len
+
+      while ((buf = client.recv(1)).arrayLength > 0 && buf != "\r" && buf != "\n")
+      {
+        command = new char[](command, buf)
+      }
+
+      if (buf != "\r" && buf != "\n")
+      {
+        out.println("Error[TaskScheduling-Deploy]: Client disconnected prematurely ($command)")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR [TaskScheduling-Deploy]: Client disconnected prematurely ($command) ")
+        client.disconnect()
+        break
+      }
+      String receivedDeployUpdate[] = stringUtil.explode(command, "\\")
+      bool success = iu.intFromString(receivedDeployUpdate[0].string)
+
+//        out.println("Success Value: $(receivedDeployUpdate[0].string)")
+      char deloyUpdate[] = receivedDeployUpdate[1].string
+      if (success == 0)
+      {
+        for(ExecutorsRegistered er = executors.getFirst(); er != null; er = executors.getNext()){
+          if (er.execId == e.execId){
+            er.clean = false
+            break
+          }
+        }
+      }
+      else
+      {
+        out.println("[EXEC-$(iu.intToString(e.execId))]: Deploy Success")
+        client.disconnect()
+        runningTasks.add(new RunningTasks(ts.taskSetId,"1",e.execId, "1", false))
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Submitted Task $(iu.intToString(ts.taskSetId)) to Executor $(iu.intToString(e.execId))")
+        taskQueue.remove(ts)
+      }
+
+
+      //end scheduling for this executor
+      break
+      //out.println("CALC-CHECK: $(iu.intToString(n.availableCores-job.coresRequired))")
+      //out.println("NODE:$(n.nmID),$(iu.intToString(n.availableCores)),$(iu.intToString(n.availableMemory))")
+    }
+    else
+    {
+      out.println("Failed to connect to Executor")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Failed to connect to Executor: $(e.execIP):$(iu.intToString(e.execPort))")
+      }//End else TCP send to NM
+
+      }//End If jobrequiredcores <= avaialable cores
+      else
+      {
+        out.println("[AM-$(iu.intToString(amId))-EXEC-$(iu.intToString(e.execId))]: Executor full [Cores available:$(iu.intToString(e.availableCores))]")
+        //Exec full count is increased as we lose ability to schedule for a single exec
+        execFullCount++
+        //End Scheduling for this executor
+        break
+        }// end else jobcores <= availablecores
+
+        }//end FIFO algorithm
+
+}//end of clean true
+
+
+      }
+
+    }

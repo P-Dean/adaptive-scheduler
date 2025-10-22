@@ -1,0 +1,4 @@
+interface JobController{
+  void ApplicationMaster (char amRequest[], char socket[],int amID,char yaSocket[],char resourceMasterIP[])
+  bool initialise( char am[], char socket[] ,int amID, char amAppName[],char resourceMasterIP[])
+}

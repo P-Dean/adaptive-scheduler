@@ -1,0 +1,11 @@
+//ContainerLauncher
+//Launches Containers using requetss from ApplicationMasters within DEFs nodes
+
+
+//component provides ContainerLauncher requires {
+
+//launch Executor
+//  bool launchExecutor(char executorContext[]){
+//    return true
+//  }
+//}

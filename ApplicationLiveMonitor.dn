@@ -1,0 +1,9 @@
+//ApplicationLiveMonitor
+//HEARTBEAT MONITOR FOR AMs
+component provides AppMstrLiveMonitor {
+
+ void AppMstrLiveMonitor:receiveAppHB(char amHeartbeat[]){
+
+}
+
+}

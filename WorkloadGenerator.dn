@@ -1,0 +1,243 @@
+
+// Generates fine and course grained workloads using variaabes within a set bondary and a given seed
+// seeds are generated from a string with a subset of characters refering to a specific number
+
+
+data Seeds{
+  char seedChars[]
+  int seed
+}
+
+data workloads{
+  char filename[]
+  char dir[]
+  char contents[]
+}
+
+data FineWorkloadValues{
+  int execThread
+  int execMemory
+  int execCount
+  char executable[]
+  int TaskSet
+}
+
+data CoarseWorkloadValues{
+  int execThread
+  int execMemory
+  int execCount
+  char executable[]
+  int TaskSet
+}
+
+
+component provides App requires io.Output out, data.IntUtil iu,data.adt.List, io.FileSystem fileSystem, io.File, data.StringUtil stringUtil,
+io.TextFile, time.DateUtil date, time.Calendar cal, Scheduling, util.RandomInt ri
+{
+  int threadCount[20]
+  int memoryCount[20]
+  int execCount[20]
+  char executableSelected[20]
+  int taskSetCount[20]
+
+  List coarseWorkload = new List()
+  List FineWorkload = new List()
+
+  char[] generateSeeds(char input[])
+  {
+    int numArray[]
+    //int output = 0
+    char output[] = ""
+    out.println("$(input)")
+    input = stringUtil.lowercase(input)
+    for (int i = 0; i < input.arrayLength; i++) {
+      if (input[i] == "a" || input[i] == "b" || input[i] == "c")
+      {
+        output = new char[](output, "2")
+      }
+      else if (input[i] == "d" || input[i] == "e" || input[i] == "f")
+      {
+        output = new char[](output, "3")
+      }
+      else if (input[i] == "g" || input[i] == "h" || input[i] == "i")
+      {
+        output = new char[](output, "4")
+      }
+      else if (input[i] == "j" || input[i]== "k" || input[i] == "l")
+      {
+        output = new char[](output, "5")
+
+      }
+      else if (input[i] == "m" || input[i] == "n" || input[i] == "o")
+      {
+        output = new char[](output, "6")
+      }
+      else if (input[i] == "p" || input[i] == "q" || input[i] == "r" || input[i] == "s")
+      {
+        output = new char[](output, "7")
+      }
+      else if (input[i] == "t" || input[i] == "u" || input[i] == "v")
+      {
+        output = new char[](output, "8")
+      }
+      else if (input[i] == "w" || input[i] == "x" || input[i] == "y" || input[i] == "z")
+      {
+        output = new char[](output, "9")
+      }
+      else if (input[i] == " ")
+      {
+        output = new char[](output, "0")
+      }
+      else
+      {
+        output = new char[](output, "1")
+      }
+    }
+
+    out.println("$(output)\n")
+    return output
+  }
+
+
+  int mixedWorkloadGenCount = 1
+  int workloadCount = 0
+  String workloadDirs[]
+  int App:main (AppParam params[])
+  {
+
+    //Generate seeds
+    static List allSeeds = new List()
+    int fineValue[20]
+    int coarseValue[20]
+    char fineSeedInput[] =  "Constantanople,Istanbul,New York,New Amsterdam,Berlin,London,Belfast,Edinburgh,Paris,Rome"
+    char seedInput[] =  "Constantanople,Istanbul,New York,New Amsterdam,Berlin,London,Belfast,Edinburgh,Paris,Rome"
+    String seedsCreated[] = stringUtil.explode(seedInput, ",")
+    char coarseDir[] = "Workloads/Tasks/CG/"
+    char fineDir[] = "Workloads/Tasks/FG/"
+    String coarseTasks[] = new String[](new String("CG-3min.o"),new String("CG-4min.o"),new String("CG-5min.o"),new String("CG-6min.o"))
+    String fineTasks[] = new String[](new String("FG-1min.o"),new String("FG-1min30sec.o"),new String("FG-30sec.o"),new String("FG-2min.o"))
+
+//    String workloadList[] = stringUtil.explode(inputTaskDir, ",")
+//    out.println("$(iu.intToString(workloadList.arrayLength))")
+
+//NOTE Driver memory is currently fixed, however this can be randomised too adding further complexity to scheduling startup decisions
+// ~driver-cores 1 ~driver-memory 2g ~executor-memory 1-6g ~executor-cores 4 ~num-executors 4 ~application-name AppFG17
+// ~application-dn Workloads/FG-W-v2/CG-3min.o ~num-partitions 5 ~application-data \Input-Data\AliceDTRH.txt
+
+//NOTE Offests are used to apply lower level bondaries to values with equal range
+
+//coarse
+//~executor-memory 4-6g
+//fine
+//~executor-memory 1-3g
+int execMemOffset = 3
+
+//fine
+//~executor-cores 1-2
+//coarse
+//~executor-cores 3-4
+int execThreadOffset = 2
+
+//coarse
+//~num-executors 1-4
+//fine
+//~num-executors 2-8
+//Offset applied only to fine random selection
+int execCountOffset = 2
+
+//coarse
+//~application-dn Workloads/CG-W-v2/CG-3min.o-CG-6min.o
+//fine
+//~application-dn Workloads/FG-W-v2/FG-1min.o-FG-30sec.o
+
+//coarse
+//~num-partitions 1-4
+//fine
+//~num-partitions 5-8
+int execTaskSetOffset = 4
+
+    for(int i = 0; i < seedsCreated.arrayLength; i++)
+    {
+      allSeeds.add(new Seeds(seedsCreated[i].string, iu.intFromString(generateSeeds(seedsCreated[i].string)) ) )
+    }
+    for (Seeds s = allSeeds.getFirst(); s != null; s = allSeeds.getNext())
+    {
+      out.println("$(s.seedChars)-$(iu.intToString(s.seed))")
+    }
+
+    int seedCount = 1
+    //iterate through all seeds creating a MixedWorkload from each Seed
+          int fineCounter = 0
+          int coarseCounter = 0
+    for (Seeds s = allSeeds.getFirst(); s != null; s = allSeeds.getNext())
+    {
+      //File f = new File("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\FG-W-V3\\FG-W$(iu.intToString(FineWorkloadGenCount))-V3.txt", File.FILE_ACCESS_WRITE)
+      //Use seed from above list t generate worklaods
+      // FOR 20 iterations 0-19
+      ri.setSeed(s.seed)
+      for(int i = 0; i < 20;i++)
+      {
+        //Thread,memory,execCount,Task,TaskSetCount
+        FineWorkload.add(new FineWorkloadValues(ri.get(2) + execThreadOffset,fineValue[i] = ri.get(3) + 1,ri.get(7) + execCountOffset,fineTasks[ri.get(4)].string,ri.get(4)+1+execTaskSetOffset))
+        coarseWorkload.add(new CoarseWorkloadValues(ri.get(3) +1+ execThreadOffset,ri.get(3) +1+ execMemOffset,ri.get(4) + 1,coarseTasks[ri.get(4)].string,ri.get(4) + 1))
+
+//        fineValue[i] = ri.get(2) + 1
+//        coarseValue[i] = ri.get(2) +1+ execThreadOffset//C
+        //out.println("ExecThread(1-2_3-4)$(iu.intToString(s.seed))-Rand:$(iu.intToString(fineValue[i])) -offset-$(iu.intToString(coarseValue[i])) ")
+
+//        fineValue[i] = ri.get(3) + 1
+//        coarseValue[i] = ri.get(3) +1+ execMemOffset//C
+        //out.println("ExecMem(1-3_4-6)$(iu.intToString(s.seed))-Rand:$(iu.intToString(fineValue[i])) -offset-$(iu.intToString(coarseValue[i])) ")
+
+//        fineValue[i] = ri.get(4) + 1 //C
+//        coarseValue[i] = ri.get(7) + execCountOffset
+        //out.println("ExecCount(1-4_2-8)$(iu.intToString(s.seed))-Rand:$(iu.intToString(fineValue[i])) -offset-$(iu.intToString(coarseValue[i])) ")
+
+//        fineValue[i] = ri.get(4)
+//        coarseValue[i] = ri.get(4)//C
+        //out.println("Task$(iu.intToString(s.seed))-Rand:$(fineTasks[fineValue[i]].string) -offset-$(coarseDir)$(coarseTasks[coarseValue[i]].string)")
+
+//        fineValue[i] = ri.get(4) + 1//C
+//        coarseValue[i] = ri.get(4)+1+execTaskSetOffset
+//        out.println("ExecTask(1-4_5-8)$(iu.intToString(s.seed))-Rand:$(iu.intToString(fineValue[i])) -offset-$(iu.intToString(coarseValue[i])) ")
+
+      }
+
+      File fwf = new File("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\FG\\FG-W$(iu.intToString(seedCount)).txt", File.FILE_ACCESS_WRITE)
+      for(FineWorkloadValues fw = FineWorkload.getFirst(); fw != null; fw = FineWorkload.getNext())
+      {
+        fineCounter++
+        //out.println("~driver-cores 1 ~driver-memory 2g ~executor-memory $(iu.intToString(fw.execMemory))g ~executor-cores $(iu.intToString(fw.execThread)) ~num-executors $(iu.intToString(fw.execCount)) ~application-name AppFG$(iu.intToString(counter)) ~application-dn $(fineDir)$(fw.executable) ~num-partitions $(iu.intToString(fw.TaskSet)) ~application-data \\Input-Data\\AliceDTRH.txt")
+        fwf.write("~driver-cores 1 ~driver-memory 2g ~executor-memory $(iu.intToString(fw.execMemory))g ~executor-cores $(iu.intToString(fw.execThread)) ~num-executors $(iu.intToString(fw.execCount)) ~application-name AppFG$(iu.intToString(fineCounter)) ~application-dn $(fineDir)$(fw.executable) ~num-partitions $(iu.intToString(fw.TaskSet)) ~application-data \\Input-Data\\AliceDTRH.txt")
+        if(!FineWorkload.isEnd()){
+          fwf.write("\n")
+        }
+
+        //out.println("Thread 1-3:$(iu.intToString(fw.execThread)) \n Memory 1-4:$(iu.intToString(fw.execMemory)) \n execCount 2-8:$(iu.intToString(fw.execCount)) \n Task :$(fw.executable) \n tCount 5-8:$(iu.intToString(fw.TaskSet))")
+      }
+      fwf.close()
+
+//      counter = 0
+      File cwf = new File("C:\\Users\\deanp1\\repo\\spark-scheduler\\Workloads\\CG\\CG-W$(iu.intToString(seedCount)).txt", File.FILE_ACCESS_WRITE)
+      for(CoarseWorkloadValues cw = coarseWorkload.getFirst(); cw != null; cw = coarseWorkload.getNext())
+      {
+        coarseCounter++
+        //out.println("~driver-cores 1 ~driver-memory 2g ~executor-memory $(iu.intToString(cw.execMemory))g ~executor-cores $(iu.intToString(cw.execThread)) ~num-executors $(iu.intToString(cw.execCount)) ~application-name AppCG$(iu.intToString(coarseCounter)) ~application-dn $(coarseDir)$(cw.executable) ~num-partitions $(iu.intToString(cw.TaskSet)) ~application-data \\Input-Data\\AliceDTRH.txt")
+        cwf.write("~driver-cores 1 ~driver-memory 2g ~executor-memory $(iu.intToString(cw.execMemory))g ~executor-cores $(iu.intToString(cw.execThread)) ~num-executors $(iu.intToString(cw.execCount)) ~application-name AppCG$(iu.intToString(coarseCounter)) ~application-dn $(coarseDir)$(cw.executable) ~num-partitions $(iu.intToString(cw.TaskSet)) ~application-data \\Input-Data\\AliceDTRH.txt")
+        if(!coarseWorkload.isEnd()){
+          cwf.write("\n")
+        }
+
+        //out.println("Thread 1-3:$(iu.intToString(fw.execThread)) \n Memory 1-4:$(iu.intToString(fw.execMemory)) \n execCount 2-8:$(iu.intToString(fw.execCount)) \n Task :$(fw.executable) \n tCount 5-8:$(iu.intToString(fw.TaskSet))")
+      }
+     cwf.close()
+
+      FineWorkload = new List()
+      coarseWorkload = new List()
+      seedCount++
+      out.println("New Workload")
+    }
+
+    return 0
+  }
+}

@@ -1,0 +1,7 @@
+uses Scheduling
+
+interface ApplicationManager{
+  void setScheduler(store Scheduling scheduler)
+  void AppSubmission(char appRequest[])
+  void addNodeManager(char nodeManagerInfo[]])
+}

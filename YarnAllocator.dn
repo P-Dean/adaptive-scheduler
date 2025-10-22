@@ -1,0 +1,425 @@
+//YarnAllocator / ExecutorAllocationManager
+
+//idle timeout 60seconds
+//default initalExecutors = o [or --num-executors /executor.instances]
+//default minExecutors = 0
+
+//initalTargetNumber
+
+data allocatedExecutors{
+  //UNQUE IDENTIFIER
+  int execID
+  //IP of nodeManager to be deployed on
+  char NMIP[]
+  //ResourceManagser leased resources
+  int allocatedCores
+  int allocatedMemory
+  //NOT FUNCIONING: Set as a flag for whether it was used in placement decision (TODO: Add RA)
+  //bool RackAwareness
+  //int Priority
+}
+
+data pendingRequests{
+  int execID
+  char amIP[]
+  int reqCores
+  int reqMemory
+}
+
+data failedExecutors{
+
+}
+
+
+
+data YAlloc {
+
+}
+
+component provides YarnAllocator requires data.adt.List, data.StringUtil stringUtil,
+data.IntUtil iu,net.TCPSocket ,net.TCPServerSocket, io.Output out, time.Calendar cal, time.DateUtil date, time.Timer timer, Log
+{
+
+  static Log log = new Log()
+  char compName[] = ""
+
+  // lists containing executorRequest alterations/additions
+  // Blacklists the nodemanager
+  List failedExecs = new List()
+  // ResourceRequests unfulfilled, may be removed or altered using AppMstrServ
+  List pendingReq = new List()
+  // ResourceManager allocated containers (passed to AppMaster and launched on NM)
+  List allocatedExecs = new List()
+
+  //current execId (counter initlaised at 0)
+  int execID
+
+  // Controls the number of executors & requests allowed to exist at a heartbeat
+  int target
+  //number of running and maximum allowed running executors
+  int numRunningExecutors
+  int numTargetExecutors
+
+  //executor resources [per executor]
+  int executorMemory
+  //int memoryOverhead
+  int executorCores
+  //Max Executors
+  int maxExecs
+
+
+  // Master Node IP [ResourceManager]
+  char master[]
+  int yaPort
+  int amID
+  char amAppName[]
+
+  //applicationMaster to register with
+  char AMIP[]
+  //port to communicte to
+  int AMPORT
+
+
+  TCPServerSocket host = new TCPServerSocket()
+  //My IP Address [Application Master]
+
+  void YarnAllocator:shutdown(){
+    host.unbind()
+  }
+
+  // All requests are sent through "sendToappMstrServ" (AppMaster receives responses)
+  bool sendToAppMstrServSynch(char request[]){
+    //AppMstrServiceIP, 2014
+    out.println("[AM-YA-$(iu.intToString(amID))]: Sending Heartbeat to App Master Service, currently requesting $(iu.intToString(target)) total executors...")
+    out.println("[Am-YA-$(iu.intToString(amID))]: $(request)")
+    log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Sending Heartbeat to App Master Service, currently requesting $(iu.intToString(target)) total executors [Request: $(request)]")
+
+    TCPSocket appMstrServClient = new TCPSocket()
+
+    //Connect To master
+    if (appMstrServClient.connect(master, 2014))
+    {
+      //Sends the Application Masters Executor reqyest to the Resource manager Application Mstr Service
+      appMstrServClient.send(new char[](request, "\n"))
+      char command[]
+      char buf[]
+      int len
+      while ((buf = appMstrServClient.recv(1)).arrayLength > 0 && buf != "\r" && buf != "\n")
+      {
+        command = new char[](command, buf)
+      }
+      if (buf == null || buf != "\r" && buf != "\n")
+      {
+        out.println("Error:[Yarn Allocator TCP]: Application Master Service disconnected prematurely ($command)")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR: [Yarn Allocator TCP]: Application Master Service disconnected prematurely ($command)")
+        appMstrServClient.disconnect()
+        return false
+      }
+      int success = iu.intFromString(command)
+      else if(success == 1){
+        out.println("Success:[Yarn Allocator TCP] Request completed by Application Master Service \n")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Success:[Yarn Allocator TCP] Request completed by Application Master Service [$(request)]")
+        appMstrServClient.disconnect()
+        return true
+      }
+      else{
+        out.println("Error:[Yarn Allocator TCP] Application Master Service rejected request \n")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR [Yarn Allocator TCP]: Application Master Service rejected request ")
+        appMstrServClient.disconnect()
+        return false
+      }
+    }
+    else
+    {
+      out.println("ERROR: Application Master [$(iu.intToString(amID))]Yarn Allocator failed to connect to RM: Application Master Service.")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR: Application Master [$(iu.intToString(amID))]Yarn Allocator failed to connect to RM: Application Master Service.")
+    }
+    return true
+  }
+
+  // All requests are sent through "sendToappMstrServ" (AppMaster receives responses)
+  bool sendToAppMstrServ(char request[]){
+    //AppMstrServiceIP, 2014
+    out.println("[AM-YA-$(iu.intToString(amID))]: Sending Heartbeat to App Master Service, currently requesting $(iu.intToString(target)) total executors...")
+    out.println("[Am-YA-$(iu.intToString(amID))]: $(request)")
+    TCPSocket AppMstrServClient = new TCPSocket()
+    //Connect To master
+    if (AppMstrServClient.connect(master, 2014))
+    {
+      //Sends the Application Masters Executor reqyest to the Resource manager Application Mstr Service
+      AppMstrServClient.send(new char[](request, "\n"))
+      AppMstrServClient.disconnect()
+    }
+    else
+    {
+      out.println("ERROR: Application Master [$(iu.intToString(amID))]Yarn Allocator fsiled to connect to RM: Application Master Service.")
+    }
+    return true
+  }
+
+  //accounts for changes in avilable exeuctors due to failure or decommission
+  int getNumExecutorsRunning()
+  {
+    return 0
+  }
+
+  //Run by RMClient using respecive AppMstr, initialises global variables for execs
+  bool YarnAllocator:initialiseYarnAllocator(char setupParams[])
+  {
+    String setupParamsElements[] = stringUtil.explode(setupParams, "\\")
+    master = setupParamsElements[6].string
+    // for (int i = 0; i < setupParamsElements.arrayLength; i++) {
+    //  out.println("YA-SETUPPARAMS: $(setupParamsElements[i].string)")
+    // }
+    // out.println("YA-TEST: $(setupParamsElements[3].string)")
+    AMIP = setupParamsElements[0].string
+    yaPort = iu.intFromString(setupParamsElements[1].string)
+    amID = iu.intFromString(setupParamsElements[2].string)
+    compName = "AM-YA-$(iu.intToString(amID))"
+    amAppName = setupParamsElements[4].string
+    String execParams[] = stringUtil.explode(setupParamsElements[3].string,"-")
+    maxExecs = iu.intFromString(execParams[0].string)
+    executorCores = iu.intFromString(execParams[1].string)
+    executorMemory = iu.intFromString(execParams[2].string)
+    execID = 1
+    AMPORT = iu.intFromString(setupParamsElements[5].string)
+    out.println("YA BINDING TO: $(setupParamsElements[0].string):$(iu.intToString(yaPort))")
+    log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] YA attempting to bind to: $(setupParamsElements[0].string):$(iu.intToString(yaPort)) ")
+
+    bool updatedInitialPort = false
+    while(!host.bind("$(AMIP)", yaPort))
+    {
+      out.println("Failed to bind requesting new socket from $(AMIP)")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Failed to bind requesting new socket from $(AMIP) ")
+      TCPSocket requestNewPort = new TCPSocket()
+      if (requestNewPort.connect(AMIP, 2033))
+      {
+        requestNewPort.send("reqPort:$(iu.intToString(amID))-$(iu.intToString(yaPort))\n")
+        char portRecv[] = ""
+        char buf[]
+        while ((buf = requestNewPort.recv(1)).arrayLength > 0 && buf != "\r" && buf != "\n")
+        {
+          portRecv = new char[](portRecv, buf)
+        }
+        out.println("Recived new Port $(portRecv)")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Recived new Port $(portRecv) ")
+        yaPort = iu.intFromString(portRecv)
+        //UPDATE APPLICATION MASTER SERVICE RECOORD FOR YA SOCKET
+        requestNewPort.disconnect()
+        updatedInitialPort = true
+      }
+      else
+      {
+        out.println("-----------ERROR: Failed to release resources")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR: Failed to release resources ")
+      }
+    }
+    if(updatedInitialPort)
+    {
+      sendToAppMstrServSynch("c:$(amAppName):$(iu.intToString(yaPort))")
+    }
+
+    out.println("[AM-$(iu.intToString(amID))]: Yarn Allocator Initialised")
+    log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Yarn Allocator completed setup")
+    //initialize base values,
+    //, retrive value from component
+    return true
+    //ExecutorAllocator AllocationPolicy
+  }
+
+  // Scale Down[removes executors]
+  void YarnAllocator:ReleaseExecutor(int execId)
+  {
+    char removeRequest[] = new char[]("$(iu.intToString(execId))","example")
+  }
+
+  //
+  void YarnAllocator:updateTotalExecutorReq(int newTarget)
+  {
+    out.println("[AM-$(iu.intToString(amID))]: YA Has received target of $(iu.intToString(newTarget)) Executors...")
+    allocate(newTarget)
+  }
+
+  int startExecutor(char execParams[])
+  {
+    TCPSocket ExecutorLauncherClient = new TCPSocket()
+    //NodeManager IP Address
+    String execParse[] = stringUtil.explode(execParams, "\\")
+    if (ExecutorLauncherClient.connect(execParse[1].string, 2033))
+    {
+      out.println("********[AM-$(iu.intToString(amID)) SENDING TO NM]:exec:$execParams-$AMIP\\$(iu.intToString(AMPORT))")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Sending to NodeManager [exec:$execParams-$AMIP:$(iu.intToString(AMPORT))] ")
+      //Sends the Application Masters Executor reqyest to the Resource manager Application Mstr Service
+      ExecutorLauncherClient.send(new char[]("exec:$execParams-$AMIP\\$(iu.intToString(AMPORT))", "\n"))
+      ExecutorLauncherClient.disconnect()
+    }
+    else
+    {
+      out.println("ERROR: Application Master [$(iu.intToString(amID))]Yarn Allocator failed to launch executor on nodeManager.")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] ERROR: Application Master [$(iu.intToString(amID))]Yarn Allocator failed to launch executor on nodeManager ")
+    }
+    return 1
+
+  }
+
+  void streamHandler(TCPSocket s)
+  {
+    char buf[]
+    char command[]
+
+    NetworkEndpoint remoteEP = s.getRemoteEndpoint()
+    NetworkEndpoint localEP = s.getLocalEndpoint()
+
+    while ((buf = s.recv(1)).arrayLength > 0 && buf != "\r" && buf != "\n")
+    {
+      command = new char[](command, buf)
+    }
+
+    s.disconnect()
+    //out.println("CHECK BUF:$recv")
+    out.println("[AM-YA-$(iu.intToString(amID))] Received: $(command)")
+    String receivedAllocations[] = stringUtil.explode(command,"-")
+
+    for (int i = 0; i < receivedAllocations.arrayLength; i++)
+    {
+      if(receivedAllocations[i].string.arrayLength > 1)
+      {
+        out.println("[AM-YA-$(iu.intToString(amID))]: RECEIVED THE ALLOCATION: $(receivedAllocations[i].string)")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Received allocation: $(receivedAllocations[i].string) ")
+        String execReqCheck[] = stringUtil.explode(receivedAllocations[i].string,"\\")
+        if(iu.intFromString(receivedAllocations[i].string) > 0)
+        {
+          if(iu.intFromString(execReqCheck[4].string)>maxExecs)
+          {
+            out.println("[AM-YA-$(iu.intToString(amID))]: DENIED $(receivedAllocations[i].string)")
+            log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Dened allocation: $(receivedAllocations[i].string)")
+          }
+          else
+          {
+            numRunningExecutors++
+            out.println("[AM-YA-$(iu.intToString(amID))]: incremented Running Exec counter")
+            startExecutor(receivedAllocations[i].string)
+          }
+//          timer.sleep(2000)
+//      }
+        }//ebd if recv alloc
+      }// end if
+
+    }//End for
+
+  }
+
+
+  //Main component of Yarnallocator, calls all functions of yarnAllocate every heartbeat
+  void YarnAllocator:allocate(int newTarget){
+    //Update = heartbeat & heartbeat pulls leases from RMs, eager heartbeats
+    // equal a faster opportunity to obtain leases. Run using YAUpdate (pass pending requests
+    // whle serving as a heartbeat to RM/vice versa)
+
+    int removeCount
+    //if pending requests exists
+    // poll rm
+    // else check for new executorRequests
+    //pass into pending
+    // receive rm  allocations with pending executorRequests
+    // else if pending executorRequests !exists
+    // switch to higher interval heartbeat
+/*
+    if(pendingReq.getLength() + allocatedExecs.getLength() > newTarget){
+      removeCount = pendingReq.getLength() + allocatedExecs.getLength() - newTarget
+      if(pendingReq.getLength()>0){
+        for (int i = 0; i < pendingReq.getLength(); i++) {
+
+        }
+      }
+    }
+*/
+    //Default execRequest, servs as a heartbeat to AMS
+    char executorRequest[] = "a:$(iu.intToString(amID))"
+    //Check for allocations required (Check Target)
+    //a:1~Example-50473079-2-2000000:2
+    out.println("**[AMS-TASK & TARGET CHECK]: Tasks: $(iu.intToString(pendingReq.getLength() + allocatedExecs.getLength())) Target:$(iu.intToString(newTarget))")
+    for (int i = 0; i < newTarget; i++)
+    {
+      if(pendingReq.getLength() + allocatedExecs.getLength() <= newTarget)
+      {
+        out.println("************* Target is less than allocated EXECs and pendingReq: $(iu.intToString(pendingReq.getLength() + allocatedExecs.getLength()) )")
+        executorRequest = new char[](executorRequest,"~","$amAppName",",","$(iu.intToString(executorCores))",",","$(iu.intToString(executorMemory))",":")
+     //NOTE if executor requests become homogenous resource checks must be used for removal [if ordering counts timestamps are required]
+        pendingReq.add(new pendingRequests(amID, AMIP, executorCores, executorMemory))
+      }
+    }
+
+    TCPSocket client = new TCPSocket()
+    TCPSocket Servclient = new TCPSocket()
+    //Connect to ResourceMaster:appMasterServicePort
+    if (client.connect(master, 2014))
+    {
+      out.println("********[AM-$(iu.intToString(amID)) SENDING TO AMS]: $(executorRequest)")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))] Sending to AMS: $(executorRequest)")
+      client.send(new char[](executorRequest, "\n"))
+      client.disconnect()
+    }
+    else
+    {
+      out.println("Could not connect to host YA")
+    }
+
+    out.println("[AM-YA-$(iu.intToString(amID))]: EXECREQ: $(executorRequest)")
+    out.println("[AM-YA-$(iu.intToString(amID))]: Waiting for response $(AMIP):$(iu.intToString(yaPort))...")
+    log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Waiting for response $(AMIP):$(iu.intToString(yaPort))")
+
+    while (true)
+    {
+      if (Servclient.accept(host))
+      {
+        streamHandler(Servclient)
+        break
+      }
+    }
+
+    while(numRunningExecutors<1){
+      timer.sleep(3000)
+      //Connect to ResourceMaster:appMasterServicePort
+      if (client.connect(master, 2014))
+      {
+        executorRequest = "a:$(iu.intToString(amID))"
+
+        client.send(new char[](executorRequest, "\n"))
+        client.disconnect()
+      }
+      else
+      {
+        out.println("Could not connect to host YA")
+        log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]: Could not connect to host YA")
+      }
+
+
+      out.println("[AM-YA-$(iu.intToString(amID))] waiting for allocation from AMS")
+      log.logArgument("[$compName][$(iu.intToString(cal.getTime().day))-$(iu.intToString(cal.getTime().year)):$(iu.intToString(cal.getTime().hour))-$(iu.intToString(cal.getTime().minute))-$(iu.intToString(cal.getTime().second))-$(iu.intToString(cal.getTime().millisecond))]:waiting for allocation from AMS ")
+
+      while (true)
+      {
+        if (Servclient.accept(host))
+        streamHandler(Servclient)
+        break
+      }
+    }
+
+    // AM CONTROLS TIMERS/YA IS THE result
+
+    }//End Allocate
+
+    // Scale Up Policy requests new[] executors when there are pending
+    // tasks and increases the number of executors exponentially since
+    // executors start slow and Spark application may need slightly more.
+    int YarnAllocator:RequestExecutor (char ExecReqRM[]){
+      return 0
+    }
+
+    // Inform Am of Execuotr avialable on a given NM, AM then requests launch
+    int YarnAllocator:AllocateExecutor (char ExecAllocAM[]){
+      return 0
+    }
+
+  }

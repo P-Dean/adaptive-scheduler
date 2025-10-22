@@ -1,0 +1,4 @@
+interface Log {
+  void logStartup(char compName[], char nodeIP[])
+  void logArgument(char arg[])
+}
