@@ -1,2 +1,2 @@
 ## Input-Data directory
-The contents of this directory will be sared among nodemanagers as required data for executor tasks if an underlying filesystem has not been set and the component added. 
+The contents of this directory will be shared among nodemanagers if the dir contains required data for executor tasks and an underlying filesystem has not been set with a component added. 
